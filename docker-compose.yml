@@ -1,0 +1,36 @@
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: mlflow_db
+    restart: always
+    environment:
+      - POSTGRES_USER=admin
+      - POSTGRES_PASSWORD=secret_password
+      - POSTGRES_DB=mlflow_tracking
+    volumes:
+      - ./mlflow_postgres_volume:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d mlflow_tracking"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  mlflow:
+    build: ./mlflow
+    container_name: mlflow_server
+    restart: always
+    ports:
+      - "5000:5000"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      - BACKEND_URI=postgresql://admin:secret_password@db:5432/mlflow_tracking
+    volumes:
+      - ./mlflow_artifact_volume:/opt/mlflow/artifacts
+    command: >
+      mlflow server 
+      --backend-store-uri postgresql://admin:secret_password@db:5432/mlflow_tracking
+      --default-artifact-root /opt/mlflow/artifacts
+      --host 0.0.0.0
+      --port 5000
