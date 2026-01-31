@@ -101,7 +101,7 @@ cascade_lvl_2:
       temperature: 0.5
 
 # CASCADE LEVEL 3 - 3 stronger worker models
-cascade_lvl_2:
+cascade_lvl_3:
   worker_model_1:
     model_name: openrouter/openai/gpt-oss-20b  # 21 Bil. | 0.02 (input) | 0.10 (output)
     endpoint:
