@@ -1,0 +1,10 @@
+[project]
+name = "Sigmoid_MLM_Project"
+version = "0.1.0"
+description = "Sigmoid MLM (Mixed Language Models) Project - Cascade of Models approach/architecture"
+requires-python = ">=3.13"
+dependencies = [
+    "loguru>=0.7.3",
+    "python-dotenv>=1.2.1",
+    "pyyaml>=6.0.3",
+]
