@@ -55,6 +55,23 @@ simple_flow:
 # CASCADE MODELS
 # CASCADE LEVEL 1 - 2 worker models
 # TODO: ADD CASCADE LEVEL 1 MODELS
+cascade_lvl_1:
+  worker_model_1:
+    model_name: openrouter/meta-llama/llama-3.1-8b-instruct
+    endpoint:
+      api_base_url: http://openrouter.ai/api/v1
+      api_key: ${OPENROUTER_API_KEY}
+    parameters:
+      max_tokens: 8192
+      temperature: 0.5
+  worker_model_2:
+    model_name: openrouter/nvidia/nemotron-nano-9b-v2
+    endpoint:
+      api_base_url: http://openrouter.ai/api/v1
+      api_key: ${OPENROUTER_API_KEY}
+    parameters:
+      max_tokens: 8192
+      temperature: 0.5
 
 # CASCADE LEVEL 2 - 3 worker models
 # TODO: ADD CASCADE LEVEL 2 MODELS
