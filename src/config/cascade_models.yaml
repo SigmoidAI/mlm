@@ -128,7 +128,39 @@ cascade_lvl_3:
       temperature: 0.5
 
 # CASCADE LEVEL 4 - 5 worker models
-# TODO: ADD CASCADE LEVEL 4 MODELS
+cascade_lvl_4:
+  worker_model_1:
+    model_name: openrouter/z-ai/glm-4-32b  # 32 Bil. | 0.10 (input) | 0.10 (output)
+    endpoint:
+      api_base_url: http://openrouter.ai/api/v1
+      api_key: ${OPENROUTER_API_KEY}
+    parameters:
+      max_tokens: 8192
+      temperature: 0.5
+  worker_model_2:
+    model_name: openrouter/nvidia/nemotron-3-nano-30b-a3b  # 30 Bil. | 0.05 (input) | 0.20 (output)
+    endpoint:
+      api_base_url: http://openrouter.ai/api/v1
+      api_key: ${OPENROUTER_API_KEY}
+    parameters:
+      max_tokens: 8192
+      temperature: 0.5
+  worker_model_3:
+    model_name: openrouter/qwen/qwen3-32b  # 32 Bil. | 0.08 (input) | 0.24 (output)
+    endpoint:
+      api_base_url: http://openrouter.ai/api/v1
+      api_key: ${OPENROUTER_API_KEY}
+    parameters:
+      max_tokens: 8192
+      temperature: 0.5
+  worker_model_4:
+    model_name: openrouter/allenai/olmo-2-0325-32b-instruct  # 32 Bil. | 0.05 (input) | 0.20 (output)
+    endpoint:
+      api_base_url: http://openrouter.ai/api/v1
+      api_key: ${OPENROUTER_API_KEY}
+    parameters:
+      max_tokens: 8192
+      temperature: 0.5
 
 # CASCADE LEVEL 5 - 6 worker models
 # TODO: ADD CASCADE LEVEL 5 MODELS
