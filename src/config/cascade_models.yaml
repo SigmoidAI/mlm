@@ -41,9 +41,9 @@ simple_flow:
     model_name: openrouter/qwen/qwen3-32b  # 32 Bil. | 0.08 (input) | 0.24 (output)
     endpoint:
       api_base_url: http://openrouter.ai/api/v1
-      api-key: ${OPENROUTER_API_KEY}
+      api_key: ${OPENROUTER_API_KEY}
     parameters:
-      max-tokens: 8192
+      max_tokens: 8192
       temperature: 0.5
   worker_model_5:
     model_name: openrouter/nvidia/llama-3.3-nemotron-super-49b-v1.5  # 49 Bil. | 0.10 (input) | 0.40 (output)
