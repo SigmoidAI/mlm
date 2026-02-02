@@ -11,7 +11,7 @@ warnings.filterwarnings("ignore")
 MLFLOW_URI = "http://127.0.0.1:5000"
 HUGGINGFACE_DATASET = "lmarena-ai/arena-hard-auto"
 MLFLOW_DATASET_NAME = "arena_hard_auto"
-EXPERIMENT_NAME = "Arena_Hard_Evaluation"
+EXPERIMENT_NAME = "DATASET_Arena_Hard"
 
 # Setup MLflow
 mlflow.set_tracking_uri(MLFLOW_URI)
