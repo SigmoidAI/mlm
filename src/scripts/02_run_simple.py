@@ -13,22 +13,29 @@ import os
 import sys
 import time
 from typing import Dict, Any
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Load .env file BEFORE importing modules that need env vars
+load_dotenv()
+
+# Add src to path for direct script execution
+src_path = str(Path(__file__).parent.parent)
+if src_path not in sys.path:
+    sys.path.insert(0, src_path)
+
+# Add parent of src (mlm root) for proper package resolution
+root_path = str(Path(__file__).parent.parent.parent)
+if root_path not in sys.path:
+    sys.path.insert(0, root_path)
 
 import mlflow
 import mlflow.pydantic_ai
 from mlflow.genai.datasets import get_dataset
-from pydantic_ai import Agent
-from pydantic_ai.models.openai import OpenAIChatModel
-from pydantic_ai.providers.openai import OpenAIProvider
 import yaml
-from pathlib import Path
-from dotenv import load_dotenv
 
-# Add src to path for direct script execution
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-# Load .env file
-load_dotenv()
+# Import WorkingAgent from agents module
+from src.agents.pydantic_agent import WorkingAgent
 
 import warnings
 warnings.filterwarnings("ignore", category=ResourceWarning)
@@ -47,7 +54,7 @@ except (ImportError, AttributeError):
 # -------------------------------------------------------------------------
 
 MLFLOW_URI = "http://127.0.0.1:5000"
-CASCADE_LEVEL = 4
+MODEL_CONFIG_KEY = "simple_flow"  # Use simple_flow models
 DATASET_ID = "d-bb04783ae0654ead9e35c474580d71b2"
 
 
@@ -102,57 +109,29 @@ def create_versioned_experiment(base_name: str) -> tuple[str, str, int]:
 # Model Configuration
 # -------------------------------------------------------------------------
 
-def load_cascade_models(level: int = 1) -> Dict[str, Any]:
-    """Load cascade_lvl_X from cascade_models.yaml"""
+def load_models(config_key: str = "simple_flow") -> Dict[str, Any]:
+    """Load models from cascade_models.yaml by config key."""
     config_path = os.path.join(os.path.dirname(__file__), "..", "config", "cascade_models.yaml")
     
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
     
-    key = f'cascade_lvl_{level}'
-    if key not in config:
-        raise ValueError(f"Cascade level {level} not found")
+    if config_key not in config:
+        raise ValueError(f"Config key '{config_key}' not found in cascade_models.yaml")
     
-    return config[key]
+    return config[config_key]
 
 
-def create_agent(model_config: Dict[str, Any]) -> Agent:
-    """Create PydanticAI agent from model config."""
-    from openai import AsyncOpenAI
-    
-    # OpenRouter requires these headers for proper API access
-    client = AsyncOpenAI(
-        base_url=model_config['endpoint']['api_base_url'],
-        api_key=os.getenv("OPENROUTER_API_KEY", ""),
-        default_headers={
-            "HTTP-Referer": "http://localhost:5000", 
-            "X-Title": "MLM Cascade Evaluation",   
-        }
+def create_agent(model_config: Dict[str, Any], model_key: str) -> WorkingAgent:
+    """Create WorkingAgent from model config."""
+    return WorkingAgent(
+        model_id=model_config['model_name'],
+        role_name=model_key,
+        system_instruction="You are a helpful AI assistant. Provide detailed, accurate answers.",
+        config=model_config,
+        cascade_tier=model_config.get('tier', 'primary'),
+        api_key=os.getenv("OPENROUTER_API_KEY", "")
     )
-    
-    model = OpenAIChatModel(
-        model_config['model_name'],
-        provider=OpenAIProvider(openai_client=client),
-    )
-    
-    # -------------------------------------------------------------------------
-    # FREE MODELS: Use str (no tool calling)
-    # -------------------------------------------------------------------------
-    return Agent(
-        model,
-        output_type=str,
-        system_prompt="You are a helpful AI assistant. Provide detailed, accurate answers."
-    )
-    
-    # -------------------------------------------------------------------------
-    # PAID MODELS: Use AgentResponse schema for structured output
-    # -------------------------------------------------------------------------
-    # from models.schemas import AgentResponse
-    # return Agent(
-    #     model,
-    #     output_type=AgentResponse,
-    #     system_prompt="You are a helpful AI assistant. Provide detailed, accurate answers."
-    # )
 
 
 
@@ -210,19 +189,11 @@ def run_cascade(question: str, question_id: str, models: Dict[str, Any]) -> Dict
         config = models[model_key]
         print(f"   [{i+1}/{max_iter}] {model_key}")
         
-        agent = create_agent(config)
+        agent = create_agent(config, model_key)
         result = agent.run_sync(prompt)
-        # Get answer from result (handles different PydanticAI versions)
-        if hasattr(result, 'output'):
-            answer = result.output
-        elif hasattr(result, 'data'):
-            answer = result.data
-        else:
-            answer = str(result)
         
-        # If answer is an object with .content, extract it
-        if hasattr(answer, 'content'):
-            answer = answer.content
+        # WorkingAgent.run_sync returns AgentResponse with .content
+        answer = result.content
         
         last_answer = answer
         
@@ -256,18 +227,18 @@ def run_cascade(question: str, question_id: str, models: Dict[str, Any]) -> Dict
 # -------------------------------------------------------------------------
 
 def run_evaluation():
-    """Run cascade evaluation on dataset."""
+    """Run simple flow evaluation on dataset."""
     
-    models = load_cascade_models(CASCADE_LEVEL)
+    models = load_models(MODEL_CONFIG_KEY)
     num_models = len(models)
     
-    exp_name = f"Cascade_Lvl{CASCADE_LEVEL}_{num_models}Models"
+    exp_name = f"SimpleFlow_{num_models}Models"
     exp_id, full_exp_name, version = create_versioned_experiment(exp_name)
     mlflow.set_experiment(full_exp_name)
     
     print(f"\n{'='*60}")
     print(f"Experiment: {full_exp_name}")
-    print(f"Cascade Level: {CASCADE_LEVEL} ({num_models} models)")
+    print(f"Config: {MODEL_CONFIG_KEY} ({num_models} models)")
     print(f"Models: {', '.join(models.keys())}")
     print(f"{'='*60}\n")
     
@@ -286,7 +257,7 @@ def run_evaluation():
             mlflow.log_params({
                 "question_id": question_id,
                 "category": category,
-                "cascade_level": CASCADE_LEVEL,
+                "config_key": MODEL_CONFIG_KEY,
                 "num_models": num_models,
                 "version": version
             })
