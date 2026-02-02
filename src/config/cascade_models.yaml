@@ -1,6 +1,7 @@
 # TEMPLATE
 # <MODEL_NAME_YAML>:
 #   model_name: <OPENROUTER_MODEL_NAME>
+#   short_model_name: <SHORT_OFFICIAL_NAME>
 #   endpoint:
 #     api_base: http://openrouter.ai/api/v1
 #     api_key: ${OPENROUTER_API_KEY}  # IS LOADED AT RUNTIME
@@ -12,8 +13,9 @@
 # SIMPLE FLOW (SINGLE MODEL APPROACH)
 simple_flow:
   worker_model_1:
-    # model_name: openrouter/ibm-granite/granite-4.0-h-micro  # 3 Bil. | 0.017 (input) | 0.11 (output)
-    model_name: openrouter/meta-llama/llama-3.1-8b-instruct  # 8 Bil. | 0.02 (input) | 0.05 (output)
+    # model_name: ibm-granite/granite-4.0-h-micro  # 3 Bil. | 0.017 (input) | 0.11 (output)
+    model_name: meta-llama/llama-3.1-8b-instruct  # 8 Bil. | 0.02 (input) | 0.05 (output)
+    short_model_name: Llama 3.1 8B Instruct
     endpoint:
       api_base_url: http://openrouter.ai/api/v1
       api_key: ${OPENROUTER_API_KEY}
@@ -21,8 +23,9 @@ simple_flow:
       max_tokens: 8192
       temperature: 0.5
   worker_model_2:
-    # model_name: openrouter/google/gemma-3-12b-it  # 12 Bil. | 0.03 (input) | 0.10 (output)
-    model_name: openrouter/microsoft/phi-4  # 14 Bil. | 0.06 (input) | 0.14 (output)  
+    # model_name: google/gemma-3-12b-it  # 12 Bil. | 0.03 (input) | 0.10 (output)
+    model_name: microsoft/phi-4  # 14 Bil. | 0.06 (input) | 0.14 (output)  
+    short_model_name: Microsoft Phi-4
     endpoint:
       api_base_url: http://openrouter.ai/api/v1
       api_key: ${OPENROUTER_API_KEY}
@@ -30,7 +33,8 @@ simple_flow:
       max_tokens: 8192
       temperature: 0.5
   worker_model_3:
-    model_name: openrouter/qwen/qwen3-14b  # 14.8 Bil. | 0.05 (input) | 0.22 (output)
+    model_name: qwen/qwen3-14b  # 14.8 Bil. | 0.05 (input) | 0.22 (output)
+    short_model_name: Qwen 3 14B
     endpoint:
       api_base_url: http://openrouter.ai/api/v1
       api_key: ${OPENROUTER_API_KEY}
@@ -38,7 +42,8 @@ simple_flow:
       max_tokens: 8192
       temperature: 0.5
   worker_model_4:
-    model_name: openrouter/qwen/qwen3-32b  # 32 Bil. | 0.08 (input) | 0.24 (output)
+    model_name: qwen/qwen3-32b  # 32 Bil. | 0.08 (input) | 0.24 (output)
+    short_model_name: Qwen 3 32B
     endpoint:
       api_base_url: http://openrouter.ai/api/v1
       api_key: ${OPENROUTER_API_KEY}
@@ -46,7 +51,8 @@ simple_flow:
       max_tokens: 8192
       temperature: 0.5
   worker_model_5:
-    model_name: openrouter/nvidia/llama-3.3-nemotron-super-49b-v1.5  # 49 Bil. | 0.10 (input) | 0.40 (output)
+    model_name: nvidia/llama-3.3-nemotron-super-49b-v1.5  # 49 Bil. | 0.10 (input) | 0.40 (output)
+    short_model_name: NVIDIA Llama 3.3 Nemotron Super 49B v1.5
     endpoint:
       api_base_url: http://openrouter.ai/api/v1
       api_key: ${OPENROUTER_API_KEY}
@@ -58,7 +64,8 @@ simple_flow:
 # CASCADE LEVEL 1 - 2 worker models
 cascade_lvl_1:
   worker_model_1:
-    model_name: openrouter/meta-llama/llama-3.1-8b-instruct  # 8 Bil. | 0.02 (input) | 0.05 (output)
+    model_name: meta-llama/llama-3.1-8b-instruct  # 8 Bil. | 0.02 (input) | 0.05 (output)
+    short_model_name: Llama 3.1 8B Instruc
     endpoint:
       api_base_url: http://openrouter.ai/api/v1
       api_key: ${OPENROUTER_API_KEY}
@@ -66,8 +73,9 @@ cascade_lvl_1:
       max_tokens: 8192
       temperature: 0.5
   worker_model_2:
-    # model_name: openrouter/nvidia/nemotron-nano-9b-v2  # 9 Bil. | 0.04 (input) | 0.16 (output)
-    model_name: openrouter/ibm-granite/granite-4.0-h-micro  # 3 Bil. | 0.017 (input) | 0.11 (output)
+    # model_name: nvidia/nemotron-nano-9b-v2  # 9 Bil. | 0.04 (input) | 0.16 (output)
+    model_name: ibm-granite/granite-4.0-h-micro  # 3 Bil. | 0.017 (input) | 0.11 (output)
+    short_model_name: IBM Granite 4.0 H Micro
     endpoint:
       api_base_url: http://openrouter.ai/api/v1
       api_key: ${OPENROUTER_API_KEY}
@@ -78,7 +86,8 @@ cascade_lvl_1:
 # CASCADE LEVEL 2 - 3 worker models
 cascade_lvl_2:
   worker_model_1:
-    model_name: openrouter/qwen/qwen3-14b  # 14.8 Bil. | 0.05 (input) | 0.22 (output)
+    model_name: qwen/qwen3-14b  # 14.8 Bil. | 0.05 (input) | 0.22 (output)
+    short_model_name: Qwen 3 14B
     endpoint:
       api_base_url: http://openrouter.ai/api/v1
       api_key: ${OPENROUTER_API_KEY}
@@ -86,7 +95,8 @@ cascade_lvl_2:
       max_tokens: 8192
       temperature: 0.5
   worker_model_2:
-    model_name: openrouter/microsoft/phi-4  # 14 Bil. | 0.06 (input) | 0.14 (output)  
+    model_name: microsoft/phi-4  # 14 Bil. | 0.06 (input) | 0.14 (output)  
+    short_model_name: Microsoft Phi-4
     endpoint:
       api_base_url: http://openrouter.ai/api/v1
       api_key: ${OPENROUTER_API_KEY}
@@ -94,7 +104,8 @@ cascade_lvl_2:
       max_tokens: 8192
       temperature: 0.5
   worker_model_3:
-    model_name: openrouter/google/gemma-3-12b-it  # 12 Bil. | 0.03 (input) | 0.10 (output)
+    model_name: google/gemma-3-12b-it  # 12 Bil. | 0.03 (input) | 0.10 (output)
+    short_model_name: Google Gemma 3 12B
     endpoint:
       api_base_url: http://openrouter.ai/api/v1
       api_key: ${OPENROUTER_API_KEY}
@@ -105,7 +116,8 @@ cascade_lvl_2:
 # CASCADE LEVEL 3 - 3 stronger worker models
 cascade_lvl_3:
   worker_model_1:
-    model_name: openrouter/openai/gpt-oss-20b  # 21 Bil. | 0.02 (input) | 0.10 (output)
+    model_name: openai/gpt-oss-20b  # 21 Bil. | 0.02 (input) | 0.10 (output)
+    short_model_name: OpenAI GPT OSS 20B
     endpoint:
       api_base_url: http://openrouter.ai/api/v1
       api_key: ${OPENROUTER_API_KEY}
@@ -113,7 +125,8 @@ cascade_lvl_3:
       max_tokens: 8192
       temperature: 0.5
   worker_model_2:
-    model_name: openrouter/google/gemma-3-27b-it  # 27 Bil. | 0.04 (input) | 0.15 (output)
+    model_name: google/gemma-3-27b-it  # 27 Bil. | 0.04 (input) | 0.15 (output)
+    short_model_name: Google Gemma 3 27B
     endpoint:
       api_base_url: http://openrouter.ai/api/v1
       api_key: ${OPENROUTER_API_KEY}
@@ -121,7 +134,8 @@ cascade_lvl_3:
       max_tokens: 8192
       temperature: 0.5
   worker_model_3:
-    model_name: openrouter/mistralai/mistral-small-3.2-24b-instruct  # 24 Bil. | 0.06 (input) | 0.18 (output)
+    model_name: mistralai/mistral-small-3.2-24b-instruct  # 24 Bil. | 0.06 (input) | 0.18 (output)
+    short_model_name: Mistral Small 3.2 24B Instruc
     endpoint:
       api_base_url: http://openrouter.ai/api/v1
       api_key: ${OPENROUTER_API_KEY}
@@ -132,7 +146,8 @@ cascade_lvl_3:
 # CASCADE LEVEL 4 - 4 worker models
 cascade_lvl_4:
   worker_model_1:
-    model_name: openrouter/z-ai/glm-4-32b  # 32 Bil. | 0.10 (input) | 0.10 (output)
+    model_name: z-ai/glm-4-32b  # 32 Bil. | 0.10 (input) | 0.10 (output)
+    short_model_name: Z-AI GLM 4 32B
     endpoint:
       api_base_url: http://openrouter.ai/api/v1
       api_key: ${OPENROUTER_API_KEY}
@@ -140,7 +155,8 @@ cascade_lvl_4:
       max_tokens: 8192
       temperature: 0.5
   worker_model_2:
-    model_name: openrouter/nvidia/nemotron-3-nano-30b-a3b  # 30 Bil. | 0.05 (input) | 0.20 (output)
+    model_name: nvidia/nemotron-3-nano-30b-a3b  # 30 Bil. | 0.05 (input) | 0.20 (output)
+    short_model_name: NVIDIA Nemotron 3 Nano 30B A3B
     endpoint:
       api_base_url: http://openrouter.ai/api/v1
       api_key: ${OPENROUTER_API_KEY}
@@ -148,7 +164,8 @@ cascade_lvl_4:
       max_tokens: 8192
       temperature: 0.5
   worker_model_3:
-    model_name: openrouter/qwen/qwen3-32b  # 32 Bil. | 0.08 (input) | 0.24 (output)
+    model_name: qwen/qwen3-32b  # 32 Bil. | 0.08 (input) | 0.24 (output)
+    short_model_name: Qwen 3 32B
     endpoint:
       api_base_url: http://openrouter.ai/api/v1
       api_key: ${OPENROUTER_API_KEY}
@@ -156,7 +173,8 @@ cascade_lvl_4:
       max_tokens: 8192
       temperature: 0.5
   worker_model_4:
-    model_name: openrouter/allenai/olmo-2-0325-32b-instruct  # 32 Bil. | 0.05 (input) | 0.20 (output)
+    model_name: allenai/olmo-2-0325-32b-instruct  # 32 Bil. | 0.05 (input) | 0.20 (output)
+    short_model_name: OLMO 2 0325 32B Instruc
     endpoint:
       api_base_url: http://openrouter.ai/api/v1
       api_key: ${OPENROUTER_API_KEY}
@@ -167,7 +185,8 @@ cascade_lvl_4:
 # CASCADE LEVEL 5 - 5 worker models
 cascade_lvl_5:
   worker_model_1:
-    model_name: openrouter/z-ai/glm-4.7-flash  # 30 Bil. | 0.07 (input) | 0.40 (output)
+    model_name: z-ai/glm-4.7-flash  # 30 Bil. | 0.07 (input) | 0.40 (output)
+    short_model_name: Z-AI GLM 4.7 Flash
     endpoint:
       api_base_url: http://openrouter.ai/api/v1
       api_key: ${OPENROUTER_API_KEY}
@@ -175,7 +194,8 @@ cascade_lvl_5:
       max_tokens: 8192
       temperature: 0.5
   worker_model_2:
-    model_name: openrouter/nvidia/llama-3.3-nemotron-super-49b-v1.5  # 49 Bil. | 0.10 (input) | 0.40 (output)
+    model_name: nvidia/llama-3.3-nemotron-super-49b-v1.5  # 49 Bil. | 0.10 (input) | 0.40 (output)
+    short_model_name: NVIDIA Llama 3.3 Nemotron Super 49B v1.5
     endpoint:
       api_base_url: http://openrouter.ai/api/v1
       api_key: ${OPENROUTER_API_KEY}
@@ -183,7 +203,8 @@ cascade_lvl_5:
       max_tokens: 8192
       temperature: 0.5
   worker_model_3:
-    model_name: openrouter/qwen/qwen3-30b-a3b-thinking-2507  # 30 Bil. | 0.051 (input) | 0.34 (output)
+    model_name: qwen/qwen3-30b-a3b-thinking-2507  # 30 Bil. | 0.051 (input) | 0.34 (output)
+    short_model_name: Qwen 3 30B A3B Thinking 2507
     endpoint:
       api_base_url: http://openrouter.ai/api/v1
       api_key: ${OPENROUTER_API_KEY}
@@ -191,7 +212,8 @@ cascade_lvl_5:
       max_tokens: 8192
       temperature: 0.5
   worker_model_4:
-    model_name: openrouter/nousresearch/hermes-4-70b  # 70 Bil. | 0.11 (input) | 0.38 (output)
+    model_name: nousresearch/hermes-4-70b  # 70 Bil. | 0.11 (input) | 0.38 (output)
+    short_model_name: Hermes 4 70B
     endpoint:
       api_base_url: http://openrouter.ai/api/v1
       api_key: ${OPENROUTER_API_KEY}
@@ -199,7 +221,8 @@ cascade_lvl_5:
       max_tokens: 8192
       temperature: 0.5
   worker_model_5:
-    model_name: openrouter/openai/gpt-5-nano  # <40 Bil. | 0.05 (input) | 0.40 (output)
+    model_name: openai/gpt-5-nano  # <40 Bil. | 0.05 (input) | 0.40 (output)
+    short_model_name: OpenAI GPT-5 Nano
     endpoint:
       api_base_url: http://openrouter.ai/api/v1
       api_key: ${OPENROUTER_API_KEY}
@@ -210,7 +233,8 @@ cascade_lvl_5:
 # JUDGE MODEL
 judge_models:
   judge_model_1:
-    model_name: openrouter/openai/gpt-oss-120b:exacto  # 117 Bil. | 0.039 (input) | 0.19 (output)
+    model_name: openai/gpt-oss-120b:exacto  # 117 Bil. | 0.039 (input) | 0.19 (output)
+    short_model_name: OpenAI GPT OSS 120B Exacto
     endpoint:
       api_base_url: http://openrouter.ai/api/v1
       api_key: ${OPENROUTER_API_KEY}
@@ -218,7 +242,8 @@ judge_models:
       max_tokens: 8192
       temperature: 0.5
   judge_model_2:
-    model_name: openrouter/google/gemini-2.5-flash-lite-preview-09-2025  # <50 Bil. | 0.10 (input) | 0.40 (output)
+    model_name: google/gemini-2.5-flash-lite-preview-09-2025  # <50 Bil. | 0.10 (input) | 0.40 (output)
+    short_model_name: Google Gemini 2.5 Flash Lite Preview 09-2025
     endpoint:
       api_base_url: http://openrouter.ai/api/v1
       api_key: ${OPENROUTER_API_KEY}
@@ -226,7 +251,8 @@ judge_models:
       max_tokens: 8192
       temperature: 0.5
   judge_model_3:
-    model_name: openrouter/openai/gpt-4.1-nano  # <40 Bil. | 0.10 (input) | 0.40 (output)
+    model_name: openai/gpt-4.1-nano  # <40 Bil. | 0.10 (input) | 0.40 (output)
+    short_model_name: OpenAI GPT 4.1 Nano
     endpoint:
       api_base_url: http://openrouter.ai/api/v1
       api_key: ${OPENROUTER_API_KEY}

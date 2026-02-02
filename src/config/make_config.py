@@ -24,8 +24,11 @@ def _load_env() -> None:
     logger.info(f".env file found at - {dotenv_path}")
     load_dotenv(dotenv_path=dotenv_path)
 
-def make_config(config_file: str) -> dict:
+def make_config(config_file: str = None) -> dict:
     _load_env()
+    
+    if not config_file:
+        config_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cascade_models.yaml")
     
     config_kwargs = {}
     with open(config_file, "r", encoding="utf-8") as f:
@@ -37,5 +40,3 @@ def make_config(config_file: str) -> dict:
     config_kwargs = yaml.safe_load(stream=content)
 
     return config_kwargs
-
-
