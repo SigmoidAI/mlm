@@ -1,4 +1,5 @@
 import argparse
+import json
 from typing import Any, Optional, Union
 
 from loguru import logger
@@ -30,10 +31,11 @@ CASCADE_MODELS_CONFIG: dict[str, str] = make_config()
 # CASCADE LEVEL
 CASCADE_LEVEL: int = 1
 
-# MLFLOW URI
+# MLFLOW
 MLFLOW_TRACKING_URI: str = "http://127.0.0.1:5000" # os.getenv(key="MLFLOW_TRACKING_URI")
+EXPERIMENT_NAME: str = "complex_workflow_run"
 
-def set_up_mlflow(mlflow_uri: str) -> None:
+def perform_initial_mlflow_setup(mlflow_uri: str) -> None:
     """Function to set up basic MLFlow workflows.
 
     Args:
@@ -139,13 +141,83 @@ def get_question_records_from_dataset(dataset: list, record_idx: Union[range, in
         )
         return None
 
+def get_or_create_versioned_experiment(experiment_name: str) -> tuple[str, str, int]:
+    """Find latest version of experiment for given complex workflow experiment, increment it if existent.
+
+    Pattern: "{experiment_name}_v{version}".
+
+    Args:
+        experiment_name (str): Name of the experiment.
+
+    Returns:
+        tuple[str, str, int]: Experiment ID, experiment name and new version.
+    """
+    logger.info(f"Searching for MLFlow experiments called: {experiment_name}")
+    all_experiments = mlflow.search_experiments(
+        filter_string=f"name LIKE '{experiment_name}_v%'",
+        order_by=["creation_time DESC"]
+    )
+
+    if all_experiments:
+        logger.info(f"Found MLFlow experiment with prefix: {experiment_name}. Incrementing version...")
+        versions = []
+        for exp in all_experiments:
+            try:
+                version_str = exp.name.split("_v")[-1]
+                versions.append(int(version_str))
+            except (ValueError, IndexError):
+                continue
+        next_version = max(versions) + 1 if versions else 1
+    else:
+        logger.info(f"No MLFlow experiment called: {experiment_name} was found.")
+        next_version = 1
+
+    experiment_name = f"{experiment_name}_v{next_version}"
+    logger.info(f"New MLFlow experiment version: {next_version}.")
+    
+    experiment_id = mlflow.create_experiment(experiment_name)
+    logger.success(f"Created experiment: {experiment_name}_v{next_version} (ID: {experiment_id})")
+    
+    return experiment_id, experiment_name, next_version
+
+# def load_models(config: dict[str, Any], config_key: str = "cascade_complex_run") -> dict[str, Any]:
+#     return config[config_key]
+
+def load_cascade_level_specific_models(config: dict[str, Any], cascade_level: int = 1, config_key: str = "cascade_complex_run") -> Optional[dict[str, Any]]:
+    """Dynamically load from configuration file and extract specific cascade level models.
+
+    Args:
+        config (dict[str, Any]): Configuration file in dict format.
+        cascade_level (int, optional): Cascade level to look for models. Defaults to 1.
+        config_key (str, optional): Key of the complex cascade subset of models. Defaults to "cascade_complex_run".
+
+    Returns:
+        Optional[dict[str, Any]]: Specific cascade models configuration at a specific cascade level. None if config entry or cascade models not found.
+    """
+    logger.info(f"Retrieving cascade models configuration: {config_key} at level: {cascade_level}.")
+    cascade_models_config: dict[str, Any] = config.get(config_key, dict())
+    
+    if not cascade_models_config:
+        logger.error(f"No config entry with key: {config_key}.")
+        return None
+    logger.success(f"Succefully retrieved config entry with key: {config_key}")
+    
+    key = f"cascade_lvl_{cascade_level}"
+    logger.info(f"Looking for cascade level: {key} in configuration file.")
+
+    if key not in cascade_models_config:
+        logger.error(f"No cascade level: {key} found in configuration file.")
+        return None
+    
+    logger.success(f"Succesfully retrieved cascade models configuration at level: {cascade_level}")
+    return cascade_models_config[key]
 
 
 def main() -> None:
     # parser = argparse.ArgumentParser()
     
     # * STEP 1: Setting up MLFlow
-    set_up_mlflow(mlflow_uri=MLFLOW_TRACKING_URI)
+    perform_initial_mlflow_setup(mlflow_uri=MLFLOW_TRACKING_URI)
     
     # * Retrieving Dataset from MLFlow
     dataset_records: dict[str, Any] = get_experiment_dataset(experiment_name=DATASET_EXPERIMENT_NAME)['records']
@@ -183,7 +255,16 @@ def main() -> None:
     
     print(f"Question {question_records_idx}: {question_record['inputs']['question']}")
     
-
+    # * STEP 3: Configuring Agents
+    # TODO: Uncomment experiment setting
+    # experiment_id, experiment_name, version = get_or_create_versioned_experiment(experiment_name=EXPERIMENT_NAME)
+    # mlflow.set_experiment(experiment_name)
+    
+    cascade_lvl_models: dict[str, Any] = load_cascade_level_specific_models(config=CASCADE_MODELS_CONFIG)
+    print(json.dumps(cascade_lvl_models, indent=2))
+    
+    
+    
 
 if __name__ == "__main__":
     logger.info('Starting script...')
