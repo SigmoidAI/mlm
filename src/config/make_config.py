@@ -10,7 +10,7 @@ from loguru import logger
 def _load_env() -> None:
     """Wrapper method for load_dotenv() method from dotenv library.
 
-    Dynamically finds .env file location using find_dotenv() method. If no path was found, it falls back to default location at root directory of the project.
+    Dynamically searches for .env file location using find_dotenv() method. If no path was found, it falls back to default location at root directory of the project.
     """
     dotenv_path: Optional[str] = find_dotenv(filename='.env')
     if not dotenv_path:
@@ -34,10 +34,10 @@ def make_config(config_file_path: str = None) -> dict:
     If no config file is provided, default configuration file is retrieved (cascade_models.yaml)
 
     Args:
-        config_file_path (str, optional): path to .yaml configuration file. Defaults to None.
+        config_file_path (str, optional): Path to .yaml configuration file. Defaults to None.
 
     Returns:
-        dict: configuration dict object
+        dict: Configuration dict object.
     """
     _load_env()
     
