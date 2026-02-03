@@ -20,9 +20,13 @@ from ..models.schemas import (
 )
 from ..config.prompts import VALIDATOR_SYSTEM_PROMPT
 
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-if not OPENROUTER_API_KEY:
-    raise ValueError("OPENROUTER_API_KEY is not set.")
+
+def get_openrouter_api_key() -> str:
+    """Get OPENROUTER_API_KEY from environment, raise if not set."""
+    key = os.getenv("OPENROUTER_API_KEY")
+    if not key:
+        raise ValueError("OPENROUTER_API_KEY is not set.")
+    return key
 
 
 # ==============================================================================
@@ -32,6 +36,7 @@ class WorkingAgent(PydanticAIAgent):
     """
     Implementation of <<custom>> WorkingAgent.
     Responsible for generating solutions and critiquing peers.
+    Uses pydantic_ai Agent internally for actual LLM calls.
     """
 
     def __init__(
@@ -40,24 +45,68 @@ class WorkingAgent(PydanticAIAgent):
             role_name: str,
             system_instruction: str,
             config: Dict[str, Any],
-            cascade_tier: str = "primary"
+            cascade_tier: str = "primary",
+            api_key: Optional[str] = None
     ):
         super().__init__(model_id, role_name, system_instruction, config)
         self.cascade_tier = cascade_tier
         self.memory: List[AgentResponse] = []
+        self.api_key = api_key or get_openrouter_api_key()
+        
+        # Extract endpoint config
+        endpoint_config = config.get('endpoint', {})
+        base_url = endpoint_config.get('api_base_url', 'https://openrouter.ai/api/v1')
+        
+        # Create OpenAI client for OpenRouter
+        self.client = AsyncOpenAI(
+            base_url=base_url,
+            api_key=self.api_key,
+            default_headers={
+                "HTTP-Referer": "http://localhost:5000",
+                "X-Title": "MLM Cascade Evaluation",
+            }
+        )
+        
+        # Create pydantic_ai model and agent
+        self.model = OpenAIChatModel(
+            model_id,
+            provider=OpenAIProvider(openai_client=self.client)
+        )
+        
+        self.agent = Agent(
+            self.model,
+            output_type=str,
+            system_prompt=system_instruction
+        )
 
     async def generate(self, context: Prompt) -> AgentResponse:
+        """Generate a response using the LLM."""
         return await self.generate_initial_solution(context)
 
     async def generate_initial_solution(self, user_input: Prompt) -> AgentResponse:
+        """Generate initial solution by calling the actual LLM."""
+        result = await self.agent.run(user_input.content)
+        
+        # Extract answer from result
+        if hasattr(result, 'output'):
+            answer = result.output
+        elif hasattr(result, 'data'):
+            answer = result.data
+        else:
+            answer = str(result)
+        
+        # If answer is an object with .content, extract it
+        if hasattr(answer, 'content'):
+            answer = answer.content
+        
         response = AgentResponse(
             author_id=self.role_name,
-            content=f"Proposed solution for: {user_input.content}",
+            content=answer,
             confidence=0.85,
             arguments=[
                 Argument(
-                    claim="The approach is feasible.",
-                    reasoning="Standard libraries support this pattern.",
+                    claim="Response generated successfully.",
+                    reasoning="LLM provided a coherent answer.",
                     verdict="Valid"
                 )
             ],
@@ -66,16 +115,44 @@ class WorkingAgent(PydanticAIAgent):
         self.memory.append(response)
         return response
 
+    def run_sync(self, prompt: str) -> AgentResponse:
+        """Synchronous wrapper for generate() - compatible with cascade script."""
+        import asyncio
+        user_input = Prompt(content=prompt)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop, create a new one
+            return asyncio.run(self.generate(user_input))
+        else:
+            # There's a running loop, use nest_asyncio or create task
+            import nest_asyncio
+            nest_asyncio.apply()
+            return loop.run_until_complete(self.generate(user_input))
+
     async def generate_critique(self, peer_responses: List[AgentResponse]) -> AgentResponse:
-        critique_content = f"Critiqued {len(peer_responses)} peer responses."
+        """Generate critique of peer responses."""
+        critique_prompt = f"Please critique the following {len(peer_responses)} responses:\n\n"
+        for i, resp in enumerate(peer_responses, 1):
+            critique_prompt += f"Response {i}:\n{resp.content}\n\n"
+        
+        result = await self.agent.run(critique_prompt)
+        
+        if hasattr(result, 'output'):
+            critique_content = result.output
+        elif hasattr(result, 'data'):
+            critique_content = result.data
+        else:
+            critique_content = str(result)
+        
         return AgentResponse(
             author_id=self.role_name,
             content=critique_content,
             confidence=0.9,
             arguments=[
                 Argument(
-                    claim="Peer #1 logic holds.",
-                    reasoning="Code compiles.",
+                    claim="Critique completed.",
+                    reasoning="Analyzed peer responses.",
                     verdict="Valid"
                 )
             ],
@@ -97,7 +174,7 @@ class ValidatorAgent:
             threshold: float = 0.8
     ):
         self.model_name = model_name
-        self.api_key = api_key or OPENROUTER_API_KEY
+        self.api_key = api_key or get_openrouter_api_key()
         self.threshold = threshold
         self.config: Dict[str, Any] = {}
         self.memory: List[Dict[str, Any]] = []
@@ -238,7 +315,7 @@ if __name__ == "__main__":
     async def main():
         validator = ValidatorAgent(
             model_name="deepseek/deepseek-r1",
-            api_key=OPENROUTER_API_KEY
+            api_key=get_openrouter_api_key()
         )
 
         print("=" * 60)
