@@ -1,4 +1,5 @@
 import argparse
+import asyncio
 import json
 import uuid
 from typing import Any, Optional, Union
@@ -11,6 +12,7 @@ import mlflow
 from ..agents.pydantic_agent import WorkingAgent
 from ..config.make_config import make_config
 from ..datasets.loader import create_or_get_experiment
+from ..models.schemas import AgentResponse, Prompt
 
 logger.info("Configuring defined variables...")
 
@@ -258,7 +260,8 @@ def initialize_worker_agents(models_config: dict[str, dict[str, Any]], cascade_l
             # return None
         
         worker_agents_dict[worker_key] = WorkingAgent(
-            model_id=f"{model_name}/{uuid.uuid4()}", # uuid.uuid4(),
+            # model_id=f"{model_name}/{uuid.uuid4()}", # uuid.uuid4(),
+            model_id=model_name,
             role_name=worker_key,
             system_instruction=WORKING_AGENT_PROMPT,
             cascade_tier=cascade_lvl,
@@ -270,10 +273,81 @@ def initialize_worker_agents(models_config: dict[str, dict[str, Any]], cascade_l
         
     return worker_agents_dict
 
-async def run_cascade_loop(worker_agents: dict[str, WorkingAgent], prompts: dict[str, str], current_level: int = 1) -> None:
-    # TODO: implement
-    logger.error("Method not implemented.")
-    # raise NotImplementedError
+
+async def run_working_agents(worker_agents: dict[str, WorkingAgent], prompt: tuple[str, str]) -> list[AgentResponse]:
+    """Run all working agents on the same cascade level in parallel to generate answers to the same prompt.
+
+    Args:
+        worker_agents (dict[str, WorkingAgent]): Dictionary mapping agent IDs to WorkingAgent instances.
+        prompt (tuple[str, str]): The question/prompt string to send to all agents
+
+    Returns:
+        list[AgentResponse]: List of AgentResponse objects - answers from the agents to the prompt.
+    """
+    _, prompt_question = prompt
+    
+    prompt_obj = Prompt(content=prompt_question, model_tier="complex")
+    logger.info(f"Created Prompt object from prompt tuple: {prompt}")
+    
+    logger.info("Created coroutines for working agents answer generation.")
+    tasks = [
+        worker_agent.generate(context=prompt_obj) for worker_agent in worker_agents.values()
+    ]
+    
+    answers: list[AgentResponse] = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    valid_answers: list[AgentResponse] = []
+    for idx, response in enumerate(answers):
+        agent_id = list(worker_agents.keys())[idx]
+        if isinstance(response, Exception):
+            # Since order of results is preserved by asyncio.gather() function in the same order as awaitables in *aws = *tasks
+            logger.error(f"Agent {agent_id} failed: {response}")
+        else:
+            def __format_response(response_content: str, len_portion: int = None) -> str:
+                """Helper function to properly display the response content in logs.
+
+                Args:
+                    response_content (str): Response content from the AgentResponse object.
+                    len_portion (int, optional): Length of the left and right portions of the shortened version of the response content. Defaults to None.
+
+                Returns:
+                    str: formatted (shortened) string variant of the response content.
+                """
+                if not len_portion:
+                    len_portion = min(51, len(response_content) // 10)
+                left_portion: str = response_content[:len_portion + 1]
+                right_portion: str = response_content[-(len_portion + 1):]
+                table = str.maketrans("\n\t\r", "   ")
+                return f"{left_portion.translate(table)}...{right_portion.translate(table)}"
+            
+            logger.success(f"Agent {agent_id} succeeded: {__format_response(response_content=response.content)}")
+            valid_answers.append(response)
+    
+    logger.success(f"Generated {len(valid_answers)} valid responses out of {len(worker_agents)} agents")
+    return valid_answers
+
+
+async def run_cascade_loop(worker_agents: dict[str, WorkingAgent], prompts: dict[str, str], current_level: int = 1) -> dict[str, list[AgentResponse]]:
+    logger.info(f"Starting cascade loop at level {current_level} with {len(prompts)} prompts")
+    
+    final_answers: dict[str, list[AgentResponse]] = {}
+    
+    for question_id, question_text in prompts.items():
+        current_prompt = (question_id, question_text)
+
+        responses = await run_working_agents(
+            worker_agents=worker_agents,
+            prompt=current_prompt
+        )
+
+        if not responses:
+            logger.error("No valid responses received. Stopping.")
+            continue
+        
+        final_answers[question_id] = responses
+        
+    logger.success(f"Cascade loop completed. Processed {len(final_answers)} questions.")
+    return final_answers
 
 
 def main() -> None:
@@ -336,8 +410,12 @@ def main() -> None:
     for worker_key, worker_agent in worker_agents_dict.items():
         print(worker_key, worker_agent.model_id)
     
-    run_cascade_loop(worker_agents=worker_agents_dict, prompts=questions_mapping, current_level=CASCADE_LEVEL)
+    answers: dict[str, list[AgentResponse]] = asyncio.run(run_cascade_loop(worker_agents=worker_agents_dict, prompts=questions_mapping, current_level=CASCADE_LEVEL))
     
+    for idx, (question_id, agents_answers) in enumerate(answers.items()):
+        print(f"Question {idx}: {question_id} - {questions_mapping[question_id]}")
+        for agent_answer in agents_answers:
+            print(f"\nAgent {agent_answer.author_id}: \n\tResponse: {agent_answer.content}")
 
 if __name__ == "__main__":
     logger.info('Starting script...')
