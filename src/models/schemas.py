@@ -6,9 +6,10 @@ This module defines the Data Transfer Objects (DTOs) used to pass messages
 between the WorkingAgent, ValidatorAgent, and the orchestration layer.
 """
 
-from typing import List, Literal, Dict, Any, Optional
-from pydantic import BaseModel, Field, ConfigDict
 from datetime import datetime
+from typing import Any, Dict, List, Literal, Optional
+
+from pydantic import BaseModel, ConfigDict, Field
 
 # -------------------------------------------------------------------------
 # Base Configuration
@@ -38,8 +39,8 @@ class Prompt(PydanticAIBaseModel):
         model_tier: Strategy for model selection (e.g., 'standard', 'premium').
     """
     content: str = Field(..., description="The user input or system instruction")
-    model_tier: Literal["standard", "premium", "fast"] = Field(
-        default="standard",
+    model_tier: Literal["simple", "complex"] = Field(
+        default="simple",
         description="The tier of LLM to use for this prompt"
     )
     timestamp: datetime = Field(default_factory=datetime.utcnow)
