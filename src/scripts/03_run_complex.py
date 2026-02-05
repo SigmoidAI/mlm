@@ -511,6 +511,38 @@ async def run_cascade_debate(worker_agents: dict[str, WorkingAgent], prev_answer
     return valid_critiques
 
 
+async def build_refinement_prompt(initial_answers: tuple[str, AgentResponse], critiques: dict[str, AgentResponse]) -> tuple[str, Prompt]:
+    """Helper function to build refinement user prompt based on previous initial answer and peer reviews/critiques.
+
+    Args:
+        initial_answers (dict[str, AgentResponse]): Initial WorkingAgent instances answers mapped by agent ID.
+        critiques (dict[str, AgentResponse]): Peer reviews mapped to their reviewer ID, delivered to specific WorkingAgent whose answers are passed in this function.
+
+    Returns:
+        tuple[str, Prompt]: New user prompt that is intended to refine WorkingAgent previous answer.
+    """
+    # TODO: Implement
+    raise NotImplementedError
+
+
+async def run_cascade_refinement_loop(worker_agents: dict[str, WorkingAgent], 
+                                      init_answers: dict[str, AgentResponse],
+                                      critiques: dict[str, AgentResponse],
+                                      current_level: int = 1) -> Optional[dict[str, AgentResponse]]:
+    """Generate refined answers using WorkingAgent objects and their initial answers and peer reviews/critiques.
+
+    Args:
+        worker_agents (dict[str, WorkingAgent]): Dictionary of WorkingAgent instances.
+        init_answers (dict[str, AgentResponse]): WorkingAgent instances initial answers. 
+        critiques (dict[str, AgentResponse]): WorkingAgent instances peer reviews.
+        current_level (int, optional): Current cascade level. Defaults to 1.
+
+    Returns:
+        Optional[dict[str, AgentResponse]]: Dict of final answers AgentResponse objects mapped to their generator agent ID.
+    """
+    # TODO: Implement
+    raise NotImplementedError
+
 
 def main() -> None:
     # parser = argparse.ArgumentParser()
@@ -525,7 +557,6 @@ def main() -> None:
         return
     
     # * STEP 2: Extracting question records from the dataset
-    
     # * SCENARIO 1: ENTIRE MLFLOW DATASET OF QUESTIONS
     # question_records_idx: int = range(0, len(dataset_records))
     # question_records: list = get_question_records_from_dataset(dataset=dataset_records, record_idx=question_records_idx)
@@ -556,7 +587,6 @@ def main() -> None:
     for idx, (question_id, question) in enumerate(questions_mapping.items()):
         print(f"Question {idx + 1}: {question_id} - {question.get('category')} - {question.get('question')}")
     
-    # TODO: Uncomment experiment setting
     experiment_id, experiment_name, version = get_or_create_versioned_experiment(experiment_name=EXPERIMENT_NAME)
     mlflow.set_experiment(experiment_name)
     
@@ -564,17 +594,16 @@ def main() -> None:
         logger.info(f"Entering cascade level {current_cascade_level}.")
         
         # * STEP 3: Configuring Agents
-        
         # * Loading complex run config models
         cascade_lvl_models = load_cascade_level_specific_models(config=CASCADE_MODELS_CONFIG, cascade_level=current_cascade_level, config_key=COMPLEX_RUN_CONFIG_KEY)
         print(json.dumps(cascade_lvl_models, indent=2))
         
         # * Instantiate Agents using working models configs
         worker_agents_dict: dict[str, WorkingAgent] = initialize_worker_agents(models_config=cascade_lvl_models, cascade_lvl=CASCADE_LEVEL)
-        for worker_key, worker_agent in worker_agents_dict.items():
-            print(worker_key, worker_agent.model_id)
+        # for worker_key, worker_agent in worker_agents_dict.items():
+        #     print(worker_key, worker_agent.agent)
         
-        # * STEP 4: Working Agents actions
+        # * STEP 4: Working Agents actions:
         for idx, (question_id, question_data) in enumerate(questions_mapping.items()):
             question_prompt = question_data['question']
             question_category = question_data['category']
@@ -593,18 +622,30 @@ def main() -> None:
                 prompt_data: tuple[str, str] = (question_id, question_prompt)
                 
                 # * Generate initial responses    
-                answers: dict[str, AgentResponse] = asyncio.run(run_cascade_initial_answer(worker_agents=worker_agents_dict, prompt_data=prompt_data, current_level=current_cascade_level))
+                initial_answers: dict[str, AgentResponse] = asyncio.run(run_cascade_initial_answer(worker_agents=worker_agents_dict, prompt_data=prompt_data, current_level=current_cascade_level))
                 
                 print(f"Question {idx}: {question_id} - {questions_mapping[question_id]}")
-                for agent_answer in answers.values():
-                    print(f"\nAgent {agent_answer.author_id}: \n\tResponse: {agent_answer.content}")
+                for agent_initial_answer in initial_answers.values():
+                    print(f"\nAgent {agent_initial_answer.author_id}: \n\tResponse: {agent_initial_answer.content}")
             
                 # * Generate Critiques/Debate prompts
-                answers: dict[str, AgentResponse] = asyncio.run(run_cascade_debate(worker_agents=worker_agents_dict, prev_answers=answers, current_level=current_cascade_level))
+                critiques: dict[str, AgentResponse] = asyncio.run(run_cascade_debate(worker_agents=worker_agents_dict, prev_answers=initial_answers, current_level=current_cascade_level))
                 
-                for agent_answer in answers.values():
-                    print(f"\nAgent {agent_answer.author_id}: \n\tResponse: {agent_answer.content}")
-        
+                for agent_critique in critiques.values():
+                    print(f"\nAgent {agent_critique.author_id}: \n\tResponse: {agent_critique.content}")
+
+                # * Generate refined final answers based on previous initial answers and critiques
+                final_answers: dict[str, AgentResponse] = asyncio.run(
+                    run_cascade_refinement_loop(
+                        worker_agents=worker_agents_dict, 
+                        init_answers=initial_answers, 
+                        critiques=critiques, 
+                        current_level=current_cascade_level
+                    )
+                )
+                
+                
+                
         logger.success(f"Cascade level {current_cascade_level} completed.")
 
 
