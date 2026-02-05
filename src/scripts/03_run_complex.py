@@ -2,7 +2,7 @@ import argparse
 import asyncio
 import json
 import uuid
-from typing import Any, Optional, Union
+from typing import Any, Coroutine, Optional, Union
 
 from loguru import logger
 from mlflow.genai.datasets import EvaluationDataset, search_datasets  # get_dataset
@@ -307,40 +307,70 @@ def __format_response(long_string_log: str, len_portion: int = None) -> str:
     table = str.maketrans("\n\t\r", "   ")
     return f"{left_portion.translate(table)}...{right_portion.translate(table)}"
 
-async def run_working_agents(worker_agents: dict[str, WorkingAgent], prompt_question: str) -> list[AgentResponse]:
-    """Run all working agents on the same cascade level in parallel to generate answers to the same prompt.
+# async def run_working_multiple_agents(worker_agents: dict[str, WorkingAgent], prompt_questions: dict[str, str]) -> dict[str, AgentResponse]:
+#     """Run all working agents on the same cascade level in parallel to generate answers to the same prompt.
+
+#     Args:
+#         worker_agents (dict[str, WorkingAgent]): Dictionary mapping agent IDs to WorkingAgent instances.
+#         prompt_questions (dict[str, str]): The question/prompt strings to send to appropriate agent.
+
+#     Returns:
+#         dict[str, AgentResponse]: Dict of AgentResponse objects mapped to their own agent ID - answers from the agents to the prompt.
+#     """
+#     tasks = []
+#     for worker_id, worker_agent in worker_agents.items():
+#         designated_prompt: Prompt = Prompt(content=prompt_questions.get(worker_id), model_tier='complex')
+#         logger.info(f"Created Prompt object from prompt question: \"{__format_response(long_string_log=designated_prompt.content)}\" for worker agent: {worker_agent.model_id}")
+#         tasks.append(worker_agent.generate(context=designated_prompt))
+    
+#     logger.info("Created coroutines for working agents answer generation.")
+    
+#     answers: list[AgentResponse] = await asyncio.gather(*tasks, return_exceptions=True)
+    
+#     agents_responses: dict[str, AgentResponse] = {}
+#     agent_ids: list[str] = list(worker_agents.keys())
+    
+#     for idx, response in enumerate(answers):
+#         agent_id = agent_ids[idx]
+#         if isinstance(response, Exception):
+#             # Since order of results is preserved by asyncio.gather() function in the same order as awaitables in *aws = *tasks
+#             logger.error(f"Agent {agent_id} failed: {response}")
+#         else:
+#             logger.success(f"Agent {agent_id} succeeded: {__format_response(long_string_log=response.content)}")
+#             agents_responses[agent_id] = response
+            
+#     logger.success(f"Generated {len(agents_responses.keys())} valid responses out of {len(worker_agents)} agents")
+#     return agents_responses
+
+
+async def run_working_agent(worker_agent: tuple[str, WorkingAgent], func: Coroutine, **kwargs) -> tuple[str, AgentResponse]:
+    """Run an individual working agent on the same cascade level to generate answers to the provided prompt.
+
+    Can be used with any answer generation from WorkingAgent class by passing its method function as an argument.
 
     Args:
-        worker_agents (dict[str, WorkingAgent]): Dictionary mapping agent IDs to WorkingAgent instances.
-        prompt (str): The question/prompt string to send to all agents
+        worker_agent (WorkingAgent): Dictionary mapping agent IDs to WorkingAgent instances.
+        prompt_question (Union[str, list[AgentResponse]]): The question/prompt strings to send to appropriate agent.
 
     Returns:
-        list[AgentResponse]: List of AgentResponse objects - answers from the agents to the prompt.
+        tuple[str, AgentResponse]: Dict of AgentResponse objects mapped to their own agent ID - answers from the agents to the prompt.
     """
-    prompt_obj = Prompt(content=prompt_question, model_tier="complex")
-    logger.info(f"Created Prompt object from prompt question: {__format_response(long_string_log=prompt_question)}")
+    agent_id, agent = worker_agent
+    func_kwargs = {**kwargs}
     
-    logger.info("Created coroutines for working agents answer generation.")
-    tasks = [
-        worker_agent.generate(context=prompt_obj) for worker_agent in worker_agents.values()
-    ]
+    agent_answer: AgentResponse = await func(**func_kwargs)
     
-    answers: list[AgentResponse] = await asyncio.gather(*tasks, return_exceptions=True)
+    if isinstance(agent_answer, Exception):
+        logger.error(f"Agent {agent_id} failed: {agent_answer}")
+        return (agent_id, None)
+    else:
+        logger.success(f"Agent {agent_id} succeeded: {__format_response(long_string_log=agent_answer.content)}")
     
-    valid_answers: list[AgentResponse] = []
-    for idx, response in enumerate(answers):
-        agent_id = list(worker_agents.keys())[idx]
-        if isinstance(response, Exception):
-            # Since order of results is preserved by asyncio.gather() function in the same order as awaitables in *aws = *tasks
-            logger.error(f"Agent {agent_id} failed: {response}")
-        else:
-            logger.success(f"Agent {agent_id} succeeded: {__format_response(long_string_log=response.content)}")
-            valid_answers.append(response)
-    logger.success(f"Generated {len(valid_answers)} valid responses out of {len(worker_agents)} agents")
-    return valid_answers
+    logger.success(f"Generated valid response by agent: {agent_id} - {agent.model_id}")
+    return (agent_id, agent_answer)
 
 
-async def run_cascade_initial_answer(worker_agents: dict[str, WorkingAgent], prompt_data: tuple[str, str], current_level: int = 1) -> Optional[list[AgentResponse]]:
+async def run_cascade_initial_answer(worker_agents: dict[str, WorkingAgent], prompt_data: tuple[str, str], current_level: int = 1) -> Optional[dict[str, AgentResponse]]:
     """Generate initial answers concurrently.
 
     Args:
@@ -349,90 +379,138 @@ async def run_cascade_initial_answer(worker_agents: dict[str, WorkingAgent], pro
         current_level (int, optional): Current level of the cascade. Defaults to 1.
 
     Returns:
-        Optional[list[AgentResponse]]: List of AgentResponse objects to the user prompt.
+        Optional[dict[str, AgentResponse]]: Mapping of AgentResponse objects to the user prompt.
     """
     prompt_id, prompt_question = prompt_data
     logger.info(f"Starting initial answer generation at cascade level: {current_level} with: {len(worker_agents.keys())} working agents and with prompt with ID: {prompt_id} - \"{__format_response(long_string_log=prompt_question)}\"")
     
-    logger.info("Invoking working agents")
-    responses = await run_working_agents(
-        worker_agents=worker_agents,
-        prompt_question=prompt_question
-    )
-
-    if not responses:
-        logger.error("No valid responses received. Stopping.")
-        return None
+    func_kwargs = {
+        "context": Prompt(content=prompt_question, model_tier='complex')
+    }
     
-    logger.success(f"Initial cascade phase of answer generation completed. Processed prompt with ID: {prompt_id}.")
-    return responses
+    tasks = [
+        run_working_agent(
+            worker_agent=(agent_id, agent),
+            func=agent.generate,
+            **func_kwargs
+        )
+        for agent_id, agent in worker_agents.items()
+    ]
+    
+    results: list[tuple[str, AgentResponse]] = await asyncio.gather(*tasks, return_exceptions=True)
 
-async def run_cascade_debate(
-    worker_agents: dict,
-    prev_answers: list[AgentResponse],
-    current_level: int = 1
-) -> Optional[list[AgentResponse]]:
+    agents_responses: dict[str, AgentResponse] = {}
+    
+    for response in results:
+        agent_id, response_content = response
+        if not response_content:
+            # Since order of results is preserved by asyncio.gather() function in the same order as awaitables in *aws = *tasks
+            logger.error(f"Agent {agent_id} failed: {response_content}")
+        else:
+            logger.success(f"Agent {agent_id} succeeded: {__format_response(long_string_log=response_content.content)}")
+            agents_responses[agent_id] = response_content
+            
+    logger.success(f"Generated {len(agents_responses.keys())} valid responses out of {len(worker_agents)} agents")
+    return agents_responses
+
+# async def run_cascade_initial_answer(worker_agents: dict[str, WorkingAgent], prompt_data: tuple[str, str], current_level: int = 1) -> Optional[dict[str, AgentResponse]]:
+#     """Generate initial answers concurrently.
+
+#     Args:
+#         worker_agents (dict[str, WorkingAgent]): List of WorkingAgent object.
+#         prompt_data (tuple[str, str]): User prompt.
+#         current_level (int, optional): Current level of the cascade. Defaults to 1.
+
+#     Returns:
+#         Optional[dict[str, AgentResponse]]: Mapping of AgentResponse objects to the user prompt.
+#     """
+#     prompt_id, prompt_question = prompt_data
+#     logger.info(f"Starting initial answer generation at cascade level: {current_level} with: {len(worker_agents.keys())} working agents and with prompt with ID: {prompt_id} - \"{__format_response(long_string_log=prompt_question)}\"")
+    
+#     prompt_question_dict: dict[str, str] = {
+#         agent_id: prompt_question for agent_id in worker_agents.keys()
+#     }
+    
+#     logger.info("Invoking working agents")
+#     responses: dict[str, AgentResponse] = await run_working_multiple_agents(
+#         worker_agents=worker_agents,
+#         prompt_questions=prompt_question_dict
+#     )
+
+#     if not responses:
+#         logger.error("No valid responses received. Stopping.")
+#         return None
+    
+#     logger.success(f"Initial cascade phase of answer generation completed. Processed prompt with ID: {prompt_id}.")
+#     return responses
+
+
+async def run_cascade_debate(worker_agents: dict[str, WorkingAgent], prev_answers: dict[str, AgentResponse], current_level: int = 1) -> Optional[dict[str, AgentResponse]]:
     """Generate critique/debate responses where each agent reviews peer responses.
 
     Args:
-        worker_agents (dict): Dictionary of WorkingAgent instances.
-        prev_answers (list[AgentResponse]): Previous round's responses to critique.
+        worker_agents (dict[str, WorkingAgent]): Dictionary of WorkingAgent instances.
+        prev_answers (dict[str, AgentResponse]): Previous round's responses to critique.
         current_level (int, optional): Current cascade level. Defaults to 1.
 
     Returns:
-        Optional[list[AgentResponse]]: List of critique AgentResponse objects
+        Optional[dict[str, AgentResponse]]: Dict of critique AgentResponse objects mapped to their generator agent ID.
     """
-    logger.info(
-        f"Starting debate process at cascade level: {current_level} "
-        f"with: {len(worker_agents.keys())} working agents"
-    )
-    logger.info(f"Generating critiques based on {len(prev_answers)} previous responses")
+    logger.info(f"Starting debate process at cascade level: {current_level} with: {len(worker_agents.keys())} working agents")
     
+    logger.info(f"Generating critiques based on {len(prev_answers)} previous responses")
     if not prev_answers:
         logger.error("No previous answers provided for debate.")
         return None
-    
-    critique_tasks = []
-    agent_ids_order = []
-    
+
+    tasks = []
     for agent_id, worker_agent in worker_agents.items():
-        # Get peer responses (excluding own response if present)
-        peer_responses = [r for r in prev_answers if r.author_id != agent_id]
+        logger.info(f"Attempting to generate critique response by agent: {agent_id} - {worker_agent.agent}")
+        print(f"{prev_answers[agent_id].author_id} - {agent_id}")
+        individual_peer_responses: list[Prompt] = [
+            Prompt(content=peer_response.content, model_tier="complex")
+            for peer_id, peer_response in prev_answers.items()
+            if peer_id != agent_id
+        ]
         
-        if not peer_responses:
+        print(f"{json.dumps(individual_peer_responses, indent=4)}")
+        
+        if not individual_peer_responses:
             logger.warning(f"Agent {agent_id} has no peer responses to critique")
             continue
+    
+        func_kwargs = {
+            "peer_responses": individual_peer_responses
+        }
         
-        logger.info(f"Agent {agent_id} will critique {len(peer_responses)} peer response(s)")
-        agent_ids_order.append(agent_id)
-        critique_tasks.append(worker_agent.generate_critique(peer_responses))
+        logger.info(f"Agent {agent_id} will critique {len(individual_peer_responses)} ({" ".join([peer_response.author_id for peer_id, peer_response in prev_answers.items() if peer_id != agent_id])}) peer response(s)")
+        
+        tasks.append(
+            run_working_agent(
+                worker_agent=(agent_id, worker_agent),
+                func=worker_agent.generate_critique,
+                **func_kwargs
+            )
+        )
+        
+    logger.info(f"Executing {len(tasks)} critique tasks in parallel")
+    critiques: list[tuple[str, AgentResponse]] = await asyncio.gather(*tasks, return_exceptions=True)
     
-    if not critique_tasks:
-        logger.error("No critique tasks created. Stopping debate.")
-        return None
+    valid_critiques: dict[str, AgentResponse] = {}
     
-    logger.info(f"Executing {len(critique_tasks)} critique tasks in parallel")
-    critiques = await asyncio.gather(*critique_tasks, return_exceptions=True)
-    
-    valid_critiques = []
-    for idx, critique in enumerate(critiques):
-        agent_id = agent_ids_order[idx]
-        if isinstance(critique, Exception):
+    for critique in critiques:
+        agent_id, critique_content = critique
+        if not critique_content:
+            # Since order of results is preserved by asyncio.gather() function in the same order as awaitables in *aws = *tasks
             logger.error(f"Agent {agent_id} critique failed: {critique}")
         else:
-            logger.success(f"Agent {agent_id} generated critique")
-            valid_critiques.append(critique)
-    
-    if not valid_critiques:
-        logger.error("No valid critiques generated.")
-        return None
-    
-    logger.success(
-        f"Debate completed. Generated {len(valid_critiques)} valid critiques "
-        f"out of {len(worker_agents)} agents"
-    )
+            logger.success(f"Agent {agent_id} generated critique: {__format_response(long_string_log=critique_content.content)}")
+            valid_critiques[agent_id] = critique_content
+            
+    logger.success(f"Debate completed. Generated {len(valid_critiques.keys())} valid critiques out of {len(worker_agents)} agents")
     return valid_critiques
-    
+
+
 
 def main() -> None:
     # parser = argparse.ArgumentParser()
@@ -515,17 +593,17 @@ def main() -> None:
                 prompt_data: tuple[str, str] = (question_id, question_prompt)
                 
                 # * Generate initial responses    
-                answers: list[AgentResponse] = asyncio.run(run_cascade_initial_answer(worker_agents=worker_agents_dict, prompt_data=prompt_data, current_level=current_cascade_level))
+                answers: dict[str, AgentResponse] = asyncio.run(run_cascade_initial_answer(worker_agents=worker_agents_dict, prompt_data=prompt_data, current_level=current_cascade_level))
                 
                 print(f"Question {idx}: {question_id} - {questions_mapping[question_id]}")
-                for agents_answers in answers:
-                    print(f"\nAgent {agents_answers.author_id}: \n\tResponse: {agents_answers.content}")
+                for agent_answer in answers.values():
+                    print(f"\nAgent {agent_answer.author_id}: \n\tResponse: {agent_answer.content}")
             
                 # * Generate Critiques/Debate prompts
-                answers: list[AgentResponse] = asyncio.run(run_cascade_debate(worker_agents=worker_agents_dict, prev_answers=answers, current_level=current_cascade_level))
+                answers: dict[str, AgentResponse] = asyncio.run(run_cascade_debate(worker_agents=worker_agents_dict, prev_answers=answers, current_level=current_cascade_level))
                 
-                for agents_answers in answers:
-                    print(f"\nAgent {agents_answers.author_id}: \n\tResponse: {agents_answers.content}")
+                for agent_answer in answers.values():
+                    print(f"\nAgent {agent_answer.author_id}: \n\tResponse: {agent_answer.content}")
         
         logger.success(f"Cascade level {current_cascade_level} completed.")
 
