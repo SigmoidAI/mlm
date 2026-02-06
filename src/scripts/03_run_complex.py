@@ -213,7 +213,7 @@ def get_or_create_versioned_experiment(experiment_name: str) -> tuple[str, str, 
     logger.info(f"New MLFlow experiment version: {next_version}.")
     
     experiment_id = mlflow.create_experiment(experiment_name)
-    logger.success(f"Created experiment: {experiment_name}_v{next_version} (ID: {experiment_id})")
+    logger.success(f"Created experiment: {experiment_name} (ID: {experiment_id})")
     
     return experiment_id, experiment_name, next_version
 
@@ -290,6 +290,18 @@ def initialize_worker_agents(models_config: dict[str, dict[str, Any]], cascade_l
         
     return worker_agents_dict
 
+def __clean_full_string(string_to_clean: str) -> str:
+    """Helper function to clean strings from \\n \\t \\r symbols.
+
+    Args:
+        string_to_clean (str): String that is being cleaned.
+
+    Returns:
+        str: cleaned version of the original string.
+    """
+    table = str.maketrans("\n\t\r", "   ")
+    return string_to_clean.translate(table)
+
 def __format_response(long_string_log: str, len_portion: int = None) -> str:
     """Helper function to properly display the string contents in logs.
 
@@ -304,8 +316,10 @@ def __format_response(long_string_log: str, len_portion: int = None) -> str:
         len_portion = min(51, len(long_string_log) // 10)
     left_portion: str = long_string_log[:len_portion + 1]
     right_portion: str = long_string_log[-(len_portion + 1):]
-    table = str.maketrans("\n\t\r", "   ")
-    return f"{left_portion.translate(table)}...{right_portion.translate(table)}"
+    return f"{__clean_full_string(string_to_clean=left_portion)}...{__clean_full_string(string_to_clean=right_portion)}"
+    
+    # table = str.maketrans("\n\t\r", "   ")
+    # return f"{left_portion.translate(table)}...{right_portion.translate(table)}"
 
 # async def run_working_multiple_agents(worker_agents: dict[str, WorkingAgent], prompt_questions: dict[str, str]) -> dict[str, AgentResponse]:
 #     """Run all working agents on the same cascade level in parallel to generate answers to the same prompt.
@@ -473,8 +487,19 @@ async def run_cascade_debate(worker_agents: dict[str, WorkingAgent], prev_answer
             if peer_id != agent_id
         ]
         
-        print(f"{json.dumps(individual_peer_responses, indent=4)}")
-        
+        print(
+            json.dumps(
+                [
+                    {
+                        "content": p.content,
+                        "model_tier": p.model_tier,
+                    }
+                    for p in individual_peer_responses
+                ],
+                indent=4
+            )
+        )
+                
         if not individual_peer_responses:
             logger.warning(f"Agent {agent_id} has no peer responses to critique")
             continue
@@ -511,21 +536,77 @@ async def run_cascade_debate(worker_agents: dict[str, WorkingAgent], prev_answer
     return valid_critiques
 
 
-async def build_refinement_prompt(initial_answers: tuple[str, AgentResponse], critiques: dict[str, AgentResponse]) -> tuple[str, Prompt]:
+def convert_peer_reviews_to_feedback_string(critiques: dict[str, AgentResponse]) -> str:
+    """Helper function to convert peer reviews AgentResponse instances to a singular XML-like format.
+
+    Args:
+        critiques (dict[str, AgentResponse]): Peer reviews mapped to their reviewer ID, delivered to specific WorkingAgent whose answers are passed in this function.
+
+    Returns:
+        str: Peer reviews structured in XML-like format.
+    """
+    blocks: list[str] = []
+
+    for idx, (agent_id, response) in enumerate(critiques.items(), start=1):
+        blocks.append(
+            f"""
+<peer_review_{idx}_start>
+<agent_id_start>{agent_id}<agent_id_end>
+<review_start>
+{response.content}
+<review_end>
+<peer_review_{idx}_end>
+""".strip()
+        )
+
+    feedback_peer_review_str = (
+        "<peer_reviews_start>\n"
+        + "\n\n".join(blocks)
+        + "\n<peer_reviews_end>"
+    )
+
+    return feedback_peer_review_str
+
+
+async def build_refinement_prompt(initial_question: str, initial_answer: tuple[str, AgentResponse], critiques: dict[str, AgentResponse]) -> tuple[str, Prompt]:
     """Helper function to build refinement user prompt based on previous initial answer and peer reviews/critiques.
 
     Args:
+        initial_question (str): Initial user input question/prompt.
         initial_answers (dict[str, AgentResponse]): Initial WorkingAgent instances answers mapped by agent ID.
         critiques (dict[str, AgentResponse]): Peer reviews mapped to their reviewer ID, delivered to specific WorkingAgent whose answers are passed in this function.
 
     Returns:
         tuple[str, Prompt]: New user prompt that is intended to refine WorkingAgent previous answer.
     """
-    # TODO: Implement
-    raise NotImplementedError
+    agent_id, initial_answer_content = initial_answer
+    logger.info(f"Attempting to build refinement prompt for agent: {agent_id}")
+    refinement_prompt_str: str = f"""
+Here are the initial question and the initial answer you gave for the initial question.
 
+INITIAL QUESTION:
+<initial_question_start>
+{__clean_full_string(string_to_clean=initial_question)}
+</initial_question_end>
+
+INITIAL ANSWER:
+<initial_answer_start>
+{__clean_full_string(string_to_clean=initial_answer_content.content)}
+<initial_answer_end>
+
+Carefully analyze the feedback that other working agents provided to your answer, identify valid points in the feedback and refine your answer in accordance to them.
+
+PEER REVIEWS:
+{convert_peer_reviews_to_feedback_string(critiques=critiques).strip()}
+    """
+    
+    print(refinement_prompt_str)
+    
+    logger.success(f"Refinement prompt for agent: {agent_id} was built: {__format_response(long_string_log=refinement_prompt_str)}")
+    return (agent_id, refinement_prompt_str)
 
 async def run_cascade_refinement_loop(worker_agents: dict[str, WorkingAgent], 
+                                      init_question: str,
                                       init_answers: dict[str, AgentResponse],
                                       critiques: dict[str, AgentResponse],
                                       current_level: int = 1) -> Optional[dict[str, AgentResponse]]:
@@ -540,8 +621,46 @@ async def run_cascade_refinement_loop(worker_agents: dict[str, WorkingAgent],
     Returns:
         Optional[dict[str, AgentResponse]]: Dict of final answers AgentResponse objects mapped to their generator agent ID.
     """
-    # TODO: Implement
-    raise NotImplementedError
+    logger.info(f"Starting final answer generation at cascade level: {current_level} with: {len(worker_agents.keys())} working agents.")
+    
+    tasks = []
+    for worker_id, worker_agent in worker_agents.items():
+        initial_answer: tuple[str, AgentResponse] = (worker_id, init_answers[worker_id])
+        peers_critiques: dict[str, AgentResponse] = {peer_id: peer_critique for peer_id, peer_critique in critiques.items() if worker_id != peer_id}
+
+        _, refinement_prompt = await build_refinement_prompt(
+            initial_question=init_question,
+            initial_answer=initial_answer,
+            critiques=peers_critiques
+        )
+        
+        func_kwargs = {
+            "context": Prompt(content=refinement_prompt, model_tier='complex')
+        }
+
+        tasks.append(
+            run_working_agent(
+                worker_agent=(worker_id, worker_agent),
+                func=worker_agent.generate,
+                **func_kwargs
+            )
+        )
+    
+    refinement_results: list[tuple[str, AgentResponse]] = await asyncio.gather(*tasks, return_exceptions=True)
+
+    agents_responses: dict[str, AgentResponse] = {}
+    
+    for refinement_result in refinement_results:
+        agent_id, refinement_result_content = refinement_result
+        if not refinement_result_content:
+            # Since order of results is preserved by asyncio.gather() function in the same order as awaitables in *aws = *tasks
+            logger.error(f"Agent {agent_id} refinement failed: {refinement_result_content}")
+        else:
+            logger.success(f"Agent {agent_id} refinement succeeded: {__format_response(long_string_log=refinement_result_content.content)}")
+            agents_responses[agent_id] = refinement_result_content
+            
+    logger.success(f"Generated {len(agents_responses.keys())} valid refined responses out of {len(worker_agents)} agents")
+    return agents_responses
 
 
 def main() -> None:
@@ -590,6 +709,11 @@ def main() -> None:
     experiment_id, experiment_name, version = get_or_create_versioned_experiment(experiment_name=EXPERIMENT_NAME)
     mlflow.set_experiment(experiment_name)
     
+    
+    # * Instantiate Judge Agent
+    # TODO: create ValidatorAgent.
+    
+    
     for current_cascade_level in range(1, CASCADE_LEVEL + 1):
         logger.info(f"Entering cascade level {current_cascade_level}.")
         
@@ -603,7 +727,6 @@ def main() -> None:
         # for worker_key, worker_agent in worker_agents_dict.items():
         #     print(worker_key, worker_agent.agent)
         
-        # * STEP 4: Working Agents actions:
         for idx, (question_id, question_data) in enumerate(questions_mapping.items()):
             question_prompt = question_data['question']
             question_category = question_data['category']
@@ -614,6 +737,7 @@ def main() -> None:
                     "question_id": question_id,
                     "category": question_category,
                     "config_key": COMPLEX_RUN_CONFIG_KEY,
+                    "cascade_level": current_cascade_level,
                     "num_models": len(worker_agents_dict.keys()),
                     "models": [model_name['short_model_name'] for model_name in cascade_lvl_models.values()],
                     "version": version
@@ -621,6 +745,7 @@ def main() -> None:
                 
                 prompt_data: tuple[str, str] = (question_id, question_prompt)
                 
+                # * STEP 4: Working Agents actions:
                 # * Generate initial responses    
                 initial_answers: dict[str, AgentResponse] = asyncio.run(run_cascade_initial_answer(worker_agents=worker_agents_dict, prompt_data=prompt_data, current_level=current_cascade_level))
                 
@@ -638,13 +763,17 @@ def main() -> None:
                 final_answers: dict[str, AgentResponse] = asyncio.run(
                     run_cascade_refinement_loop(
                         worker_agents=worker_agents_dict, 
+                        init_question=question_prompt,
                         init_answers=initial_answers, 
                         critiques=critiques, 
                         current_level=current_cascade_level
                     )
                 )
                 
+                for agent_final_answer in final_answers.values():
+                    print(f"\nAgent {agent_final_answer.author_id}: \n\tResponse: {agent_final_answer.content}")
                 
+                # * STEP 5: Integrate Judge Agent to select the best final answer.
                 
         logger.success(f"Cascade level {current_cascade_level} completed.")
 
