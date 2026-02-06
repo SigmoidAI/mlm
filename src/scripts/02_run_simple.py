@@ -12,8 +12,9 @@ Flow:
 import os
 import sys
 import time
-from typing import Dict, Any
 from pathlib import Path
+from typing import Any, Dict
+
 from dotenv import load_dotenv
 
 # Load .env file BEFORE importing modules that need env vars
@@ -29,15 +30,17 @@ root_path = str(Path(__file__).parent.parent.parent)
 if root_path not in sys.path:
     sys.path.insert(0, root_path)
 
-import mlflow
+import warnings
+
 import mlflow.pydantic_ai
-from mlflow.genai.datasets import get_dataset
 import yaml
+from mlflow.genai.datasets import get_dataset
+
+import mlflow
 
 # Import WorkingAgent from agents module
 from src.agents.pydantic_agent import WorkingAgent
 
-import warnings
 warnings.filterwarnings("ignore", category=ResourceWarning)
 
 try:

@@ -1,0 +1,9 @@
+loguru
+python-dotenv
+pyyaml
+hf_xet
+datasets
+nest-asyncio
+mlflow
+pydantic
+pydantic-ai
