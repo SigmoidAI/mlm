@@ -41,6 +41,9 @@ WORKING_AGENT_PROMPT: str = "You are a helpful AI assistant. Provide detailed, a
 CASCADE_MODELS_CONFIG: dict[str, str] = make_config()
 COMPLEX_RUN_CONFIG_KEY: str = "cascade_complex_run"
 
+# JUDGE MODELS CONFIG
+JUDGE_MODELS_CONFIG_KEY: str = "judge_models"
+
 # CASCADE LEVEL
 CASCADE_LEVEL: int = 1
 
@@ -662,6 +665,54 @@ async def run_cascade_refinement_loop(worker_agents: dict[str, WorkingAgent],
     logger.success(f"Generated {len(agents_responses.keys())} valid refined responses out of {len(worker_agents)} agents")
     return agents_responses
 
+
+def convert_agents_answers_to_ensemble_prompt(answers: dict[str, AgentResponse]) -> str:
+    """Helper function to convert worker agents AgentResponse instances to a singular XML-like format.
+
+    Args:
+        answers (dict[str, AgentResponse]): Worker agents answers mapped to their agent ID.
+
+    Returns:
+        str: Agents answers structured in XML-like format.
+    """
+    blocks: list[str] = []
+
+    for idx, (_, response) in enumerate(answers.items(), start=1):
+        blocks.append(
+            f"""
+<worker_answer_{idx}_start>
+{response.content}
+<worker_answer_{idx}_end>
+""".strip()
+        )
+
+    agents_answers_str = (
+        "<workers_answers_start>\n"
+        + "\n\n".join(blocks)
+        + "\n<workers_answers_end>"
+    )
+
+    return agents_answers_str
+
+
+def ensemble_agents_answers(agents_answers: dict[str, AgentResponse], initial_question: str, current_level: int = 1) -> str:
+    
+    ensembled_workers_answers: str = f"""
+Preivous cascade level worker agents did not succeed to answer properly user question/prompt. Analyze the question and their answers and generate better results:
+
+INITIAL QUESTION:
+{__clean_full_string(string_to_clean=initial_question)}
+
+Here are the previous cascade level {current_level} worker agents answers:
+
+PREVIOUS ANSWERS:
+{convert_agents_answers_to_ensemble_prompt(answers=agents_answers).strip()}
+    """
+    
+    print(ensembled_workers_answers)
+    
+    logger.success(f"Ensembled prompt was built: {__format_response(long_string_log=ensembled_workers_answers)}")
+    return ensembled_workers_answers
 
 def main() -> None:
     # parser = argparse.ArgumentParser()
