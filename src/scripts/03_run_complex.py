@@ -9,7 +9,7 @@ from mlflow.genai.datasets import EvaluationDataset, search_datasets  # get_data
 
 import mlflow
 
-from ..agents.pydantic_agent import WorkingAgent
+from ..agents.pydantic_agent import ValidatorAgent, WorkingAgent
 from ..config.make_config import make_config
 from ..datasets.loader import create_or_get_experiment
 from ..models.schemas import AgentResponse, Prompt
@@ -43,6 +43,7 @@ COMPLEX_RUN_CONFIG_KEY: str = "cascade_complex_run"
 
 # JUDGE MODELS CONFIG
 JUDGE_MODELS_CONFIG_KEY: str = "judge_models"
+JUDGE_MODEL_KEY: str = "judge_model_1"
 
 # CASCADE LEVEL
 CASCADE_LEVEL: int = 1
@@ -220,40 +221,79 @@ def get_or_create_versioned_experiment(experiment_name: str) -> tuple[str, str, 
     
     return experiment_id, experiment_name, next_version
 
-# TODO: check alternative models loading mechanism. Not sure if it is viable.
-# def load_models(config: dict[str, Any], config_key: str = "cascade_complex_run") -> dict[str, Any]:
-#     return config[config_key]
 
-def load_cascade_level_specific_models(config: dict[str, Any], 
-                                       cascade_level: int, 
-                                       config_key: str) -> Optional[dict[str, Any]]:
-    """Dynamically load from configuration file and extract specific cascade level models.
+def load_models_from_config(config: dict[str, Any], config_class_key: str, config_subclass_key: Optional[str] = None) -> Optional[dict[str, Any]]:
+    """Dynamically load from configuration file and extract models configuration.
+
+    By default, if no config_subclass_key argument is provided, it will return first level of configuration. For example, if config_class_key="cascade_complex_run", it will
+    return all cascade levels models.
+
+    If config_subclass_key argument is provided, this function will return second level of congiguration. For example, if config_class_key="cascade_complex_run" and 
+    config_subclass_key="cascade_lvl_1", it will return all the models configurations for level 1 of the cascade.
 
     Args:
-        config (dict[str, Any]): Configuration file in dict format.
-        cascade_level (int, optional): Cascade level to look for models.
-        config_key (str, optional): Key of the complex cascade subset of models.
+        config (dict[str, Any]): Configuration object that contains information about each workflow of the app.
+        config_class_key (str): First level retrieval key.
+        config_subclass_key (Optional[str], optional): Second level retrieval key. Defaults to None.
 
     Returns:
-        Optional[tuple[dict[str, Any], int]]: Specific cascade models configuration at a specific cascade level and corresponding cascade level as a tuple. None if config entry or cascade models not found.
+        Optional[dict[str, Any]]: Specific portion of the configuration file. For example, depending if config_subclass_key provided, it may return specific models cascade-wise
+        or entire cascade levels.
     """
-    logger.info(f"Retrieving cascade models configuration: {config_key} at level: {cascade_level}.")
-    cascade_models_config: dict[str, Any] = config.get(config_key, {})
+    logger.info(f"Retrieving models configuration from class: {config_class_key}.")
+    models_class_config: dict[str, Any] = config.get(config_class_key, {})
     
-    if not cascade_models_config:
-        logger.error(f"No config entry with key: {config_key}.")
+    if not models_class_config:
+        logger.error(f"No config class entry with key: {config_class_key}.")
         return None
-    logger.success(f"Succefully retrieved config entry with key: {config_key}")
+    logger.success(f"Succefully retrieved config class entry with key: {config_class_key}")
     
-    key = f"cascade_lvl_{cascade_level}"
-    logger.info(f"Looking for cascade level: {key} in configuration file.")
+    if not config_subclass_key:
+        logger.info(f"Early stop in configuration retrieval at class level: {config_class_key}.")
+        return models_class_config
+    
+    logger.info(f"Retrieving models configuration from subclass: {config_subclass_key}.")
+    
+    models_subclass_config: dict[str, Any] = models_class_config.get(config_subclass_key, {})
+    
+    if not models_subclass_config:
+        logger.error(f"No config subclass entry with key: {config_subclass_key}.")
+        return None
+    
+    logger.success(f"Succesfully retrieved subclass: {config_subclass_key} models configuration.")
+    
+    return models_subclass_config
+    
+# def load_cascade_level_specific_models(config: dict[str, Any], 
+#                                        cascade_level: int, 
+#                                        config_key: str) -> Optional[dict[str, Any]]:
+#     """Dynamically load from configuration file and extract specific cascade level models.
 
-    if key not in cascade_models_config:
-        logger.error(f"No cascade level: {key} found in configuration file.")
-        return None
+#     Args:
+#         config (dict[str, Any]): Configuration file in dict format.
+#         cascade_level (int, optional): Cascade level to look for models.
+#         config_key (str, optional): Key of the complex cascade subset of models.
+
+#     Returns:
+#         Optional[tuple[dict[str, Any], int]]: Specific cascade models configuration at a specific cascade level and corresponding cascade level as a tuple. None if config entry or cascade models not found.
+#     """
+#     logger.info(f"Retrieving cascade models configuration: {config_key} at level: {cascade_level}.")
+#     cascade_models_config: dict[str, Any] = config.get(config_key, {})
     
-    logger.success(f"Succesfully retrieved cascade models configuration at level: {cascade_level}")
-    return cascade_models_config[key]
+#     if not cascade_models_config:
+#         logger.error(f"No config entry with key: {config_key}.")
+#         return None
+#     logger.success(f"Succefully retrieved config entry with key: {config_key}")
+    
+#     key = f"cascade_lvl_{cascade_level}"
+#     logger.info(f"Looking for cascade level: {key} in configuration file.")
+
+#     if key not in cascade_models_config:
+#         logger.error(f"No cascade level: {key} found in configuration file.")
+#         return None
+    
+#     logger.success(f"Succesfully retrieved cascade models configuration at level: {cascade_level}")
+#     return cascade_models_config[key]
 
 
 def initialize_worker_agents(models_config: dict[str, dict[str, Any]], cascade_lvl: int) -> dict[str, WorkingAgent]: # Optional[dict[str, WorkingAgent]]:
@@ -269,8 +309,8 @@ def initialize_worker_agents(models_config: dict[str, dict[str, Any]], cascade_l
     worker_agents_dict: dict[str, WorkingAgent] = {}
     
     for worker_key, worker_config in models_config.items():
-        logger.info(f"Attempting to instantiate working agent: {worker_key}")
         model_name: str = worker_config.get("model_name", None)
+        logger.info(f"Attempting to instantiate working agent: {worker_key} - {model_name}")
         endpoint_struct: dict[str, str] = worker_config.get("endpoint", None)
         parameters_struct: dict[str, Any] = worker_config.get("parameters", None)
 
@@ -292,6 +332,30 @@ def initialize_worker_agents(models_config: dict[str, dict[str, Any]], cascade_l
         logger.success(f"Instantiated working agent with ID: {worker_agents_dict[worker_key].model_id}")
         
     return worker_agents_dict
+
+
+def initialize_judge_agent(judges_config: dict[str, Any], judge_key: str) -> Optional[ValidatorAgent]:
+    specific_judge_config: dict[str, Any] = judges_config.get(judge_key, {})
+    
+    if not specific_judge_config:
+        logger.error(f"No judge model found by key: {judge_key}.")
+        return None
+    
+    judge_name: str = specific_judge_config.get("model_name", None)
+    endpoint_struct: dict[str, str] = specific_judge_config.get("endpoint", None)
+    parameters_struct: dict[str, Any] = specific_judge_config.get("parameters", None)
+    
+    if any(x is None for x in [judge_name, endpoint_struct, parameters_struct]):
+        logger.error("Malformed judge model configuration found.")
+        
+    logger.info(f"Attempting to instantiate validator agent (judge): {judge_key} - {judge_name}")
+    
+    validator_agent: ValidatorAgent = ValidatorAgent(model_name=judge_name, api_key=endpoint_struct.get('api_key'))
+    
+    logger.success(f"Instantiated judge agent with ID: {judge_key} - {validator_agent.model_name}")
+    
+    return validator_agent
+
 
 def __clean_full_string(string_to_clean: str) -> str:
     """Helper function to clean strings from \\n \\t \\r symbols.
@@ -762,15 +826,24 @@ def main() -> None:
     
     
     # * Instantiate Judge Agent
-    # TODO: create ValidatorAgent.
+    judge_models = load_models_from_config(config=CASCADE_MODELS_CONFIG, config_class_key=JUDGE_MODELS_CONFIG_KEY)
+    print(json.dumps(judge_models, indent=2))
     
+    validator_agent = initialize_judge_agent(judges_config=judge_models, judge_key=JUDGE_MODEL_KEY)
+    
+    if not validator_agent:
+        logger.error("Failed to initialize a judge agent.")
+        return
+
+    print(validator_agent)
+    print(validator_agent.model_name)
     
     for current_cascade_level in range(1, CASCADE_LEVEL + 1):
         logger.info(f"Entering cascade level {current_cascade_level}.")
         
         # * STEP 3: Configuring Agents
         # * Loading complex run config models
-        cascade_lvl_models = load_cascade_level_specific_models(config=CASCADE_MODELS_CONFIG, cascade_level=current_cascade_level, config_key=COMPLEX_RUN_CONFIG_KEY)
+        cascade_lvl_models = load_models_from_config(config=CASCADE_MODELS_CONFIG, config_class_key=COMPLEX_RUN_CONFIG_KEY, config_subclass_key=f"cascade_lvl_{current_cascade_level}")
         print(json.dumps(cascade_lvl_models, indent=2))
         
         # * Instantiate Agents using working models configs
@@ -825,6 +898,7 @@ def main() -> None:
                     print(f"\nAgent {agent_final_answer.author_id}: \n\tResponse: {agent_final_answer.content}")
                 
                 # * STEP 5: Integrate Judge Agent to select the best final answer.
+                
                 
         logger.success(f"Cascade level {current_cascade_level} completed.")
 
