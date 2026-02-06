@@ -34,8 +34,49 @@ MLFLOW_DATASET_NAME: str = "arena_hard_auto"
 
 # CONFIGURATION
 
-# WORKER PROMPT
+# PROMPTS
 WORKING_AGENT_PROMPT: str = "You are a helpful AI assistant. Provide detailed, accurate answers."
+NEXT_CASCADE_LEVEL_PROMPT: str = "Previous cascade level worker agents did not succeed to answer properly user question/prompt. Analyze the question and their answers and generate better results:"
+JUDGE_PROMPT_1: str = """
+Worker agents provided the following answers to the initial question. 
+Analyze the question and their answers and start a voting process for the best answer.
+Be impartial and serve as an objective critic.
+Provide the response in the following format:
+```json
+{
+    "question": <question>,
+    "best_answer": <worker_model_id>,
+    "confidence_score": <answer_confidence_score_float_4_decimals>,
+    "reason": <reason>,
+}
+```
+"""
+
+JUDGE_PROMPT_2: str = """
+Worker agents provided the following answers to the initial question. 
+Analyze the question and their answers and start a voting process for the best answer.
+Be impartial and serve as an objective critic.
+Provide the response in the following format:
+```json
+{
+    "question": <question>,
+    "best_answer": {
+        "best_worker_model_id": <best_worker_model_<id>>,
+        "best_confidence_score": <best_answer_confidence_score_float_4_decimals>,
+        "best_reason": <best_reason>    
+    },
+    "worker_model_<id>": {
+        "confidence_score": <answer_confidence_score_float_4_decimals>,
+        "reason": <reason>,
+    },
+    "worker_model_<id>": {
+        "confidence_score": <answer_confidence_score_float_4_decimals>,
+        "reason": <reason>,
+    },
+    ...
+}
+```
+"""
 
 # CASCADE MODELS CONFIG
 CASCADE_MODELS_CONFIG: dict[str, str] = make_config()
@@ -44,9 +85,10 @@ COMPLEX_RUN_CONFIG_KEY: str = "cascade_complex_run"
 # JUDGE MODELS CONFIG
 JUDGE_MODELS_CONFIG_KEY: str = "judge_models"
 JUDGE_MODEL_KEY: str = "judge_model_1"
+ACCEPTABLE_SCORE: float = 0.9
 
 # CASCADE LEVEL
-CASCADE_LEVEL: int = 1
+CASCADE_LEVEL: int = 5
 
 # MLFLOW
 MLFLOW_TRACKING_URI: str = "http://127.0.0.1:5000" # os.getenv(key="MLFLOW_TRACKING_URI")
@@ -603,6 +645,19 @@ async def run_cascade_debate(worker_agents: dict[str, WorkingAgent], prev_answer
     return valid_critiques
 
 
+async def run_validation(judge_agent: ValidatorAgent, question: str, prompt: Prompt, answers: dict[str, AgentResponse]) -> dict[str, Any]:
+    logger.info(f"Engaging judge agent in validation of: {len(answers.keys())} answers.")
+    judge_response = await judge_agent.evaluate_multiple(prompt=prompt, question=question, answers=answers)
+    
+    if not judge_response:
+        logger.error(f"Judge agent did not succeed to generate appropriate response: {judge_response}")
+        print(judge_response)
+        return None
+    
+    logger.success("Judge agent succeeded to generate apropriate response.")
+    print(judge_response)
+    return judge_response
+
 def convert_peer_reviews_to_feedback_string(critiques: dict[str, AgentResponse]) -> str:
     """Helper function to convert peer reviews AgentResponse instances to a singular XML-like format.
 
@@ -741,12 +796,12 @@ def convert_agents_answers_to_ensemble_prompt(answers: dict[str, AgentResponse])
     """
     blocks: list[str] = []
 
-    for idx, (_, response) in enumerate(answers.items(), start=1):
+    for worker_id, response in answers.items():
         blocks.append(
             f"""
-<worker_answer_{idx}_start>
+<{worker_id}_answer_start>
 {response.content}
-<worker_answer_{idx}_end>
+<{worker_id}_answer_end>
 """.strip()
         )
 
@@ -759,17 +814,18 @@ def convert_agents_answers_to_ensemble_prompt(answers: dict[str, AgentResponse])
     return agents_answers_str
 
 
-def ensemble_agents_answers(agents_answers: dict[str, AgentResponse], initial_question: str, current_level: int = 1) -> str:
+def ensemble_agents_answers(agents_answers: dict[str, AgentResponse], 
+                            initial_question: str,
+                            premise_clause: str, 
+                            **kwargs) -> str:
     
     ensembled_workers_answers: str = f"""
-Preivous cascade level worker agents did not succeed to answer properly user question/prompt. Analyze the question and their answers and generate better results:
+{premise_clause}
 
 INITIAL QUESTION:
 {__clean_full_string(string_to_clean=initial_question)}
 
-Here are the previous cascade level {current_level} worker agents answers:
-
-PREVIOUS ANSWERS:
+ANSWERS:
 {convert_agents_answers_to_ensemble_prompt(answers=agents_answers).strip()}
     """
     
@@ -777,6 +833,12 @@ PREVIOUS ANSWERS:
     
     logger.success(f"Ensembled prompt was built: {__format_response(long_string_log=ensembled_workers_answers)}")
     return ensembled_workers_answers
+
+
+async def synthetize_final_answer(validator_agent: ValidatorAgent, final_answers: dict[str, AgentResponse]) -> AgentResponse:
+    final_response: AgentResponse = await validator_agent.synthesize_final(responses=final_answers.values())
+    return final_response.content
+
 
 def main() -> None:
     # parser = argparse.ArgumentParser()
@@ -824,59 +886,57 @@ def main() -> None:
     experiment_id, experiment_name, version = get_or_create_versioned_experiment(experiment_name=EXPERIMENT_NAME)
     mlflow.set_experiment(experiment_name)
     
-    
     # * Instantiate Judge Agent
     judge_models = load_models_from_config(config=CASCADE_MODELS_CONFIG, config_class_key=JUDGE_MODELS_CONFIG_KEY)
     print(json.dumps(judge_models, indent=2))
     
-    validator_agent = initialize_judge_agent(judges_config=judge_models, judge_key=JUDGE_MODEL_KEY)
+    for idx, (question_id, question_data) in enumerate(questions_mapping.items()):
+        question_prompt = question_data['question']
+        question_category = question_data['category']
+        logger.info(f"[{idx + 1}/{len(questions_mapping.keys())}] Processing prompt with ID: {question_id} - {question_category} - \"{question_prompt}\"")
+        
+        validator_agent = initialize_judge_agent(judges_config=judge_models, judge_key=JUDGE_MODEL_KEY)
     
-    if not validator_agent:
-        logger.error("Failed to initialize a judge agent.")
-        return
+        if not validator_agent:
+            logger.error("Failed to initialize a judge agent.")
+            return
 
-    print(validator_agent)
-    print(validator_agent.model_name)
-    
-    for current_cascade_level in range(1, CASCADE_LEVEL + 1):
-        logger.info(f"Entering cascade level {current_cascade_level}.")
+        print(validator_agent)
+        print(validator_agent.model_name)
         
-        # * STEP 3: Configuring Agents
-        # * Loading complex run config models
-        cascade_lvl_models = load_models_from_config(config=CASCADE_MODELS_CONFIG, config_class_key=COMPLEX_RUN_CONFIG_KEY, config_subclass_key=f"cascade_lvl_{current_cascade_level}")
-        print(json.dumps(cascade_lvl_models, indent=2))
-        
-        # * Instantiate Agents using working models configs
-        worker_agents_dict: dict[str, WorkingAgent] = initialize_worker_agents(models_config=cascade_lvl_models, cascade_lvl=CASCADE_LEVEL)
-        # for worker_key, worker_agent in worker_agents_dict.items():
-        #     print(worker_key, worker_agent.agent)
-        
-        for idx, (question_id, question_data) in enumerate(questions_mapping.items()):
-            question_prompt = question_data['question']
-            question_category = question_data['category']
-            logger.info(f"[{idx + 1}/{len(questions_mapping.keys())}] Processing prompt with ID: {question_id} - {question_category} - \"{question_prompt}\"")
+        with mlflow.start_run(run_name=question_id):
+            mlflow.log_params({
+                "question_id": question_id,
+                "category": question_category,
+                "in_cascade_judge_model": validator_agent.model_name,
+                "config_key": COMPLEX_RUN_CONFIG_KEY,
+                "version": version
+            })
+            prompt_data: tuple[str, str] = (question_id, question_prompt)
             
-            with mlflow.start_run(run_name=question_id):
-                mlflow.log_params({
-                    "question_id": question_id,
-                    "category": question_category,
-                    "config_key": COMPLEX_RUN_CONFIG_KEY,
-                    "cascade_level": current_cascade_level,
-                    "num_models": len(worker_agents_dict.keys()),
-                    "models": [model_name['short_model_name'] for model_name in cascade_lvl_models.values()],
-                    "version": version
-                })
+            for current_cascade_level in range(1, CASCADE_LEVEL + 1):
+                logger.info(f"Entering cascade level {current_cascade_level}.")
                 
-                prompt_data: tuple[str, str] = (question_id, question_prompt)
+                # * STEP 3: Configuring Agents
+                # * Loading complex run config models
+                cascade_lvl_models = load_models_from_config(config=CASCADE_MODELS_CONFIG, config_class_key=COMPLEX_RUN_CONFIG_KEY, config_subclass_key=f"cascade_lvl_{current_cascade_level}")
+                print(json.dumps(cascade_lvl_models, indent=2))
+                
+                # * Instantiate Agents using working models configs
+                worker_agents_dict: dict[str, WorkingAgent] = initialize_worker_agents(models_config=cascade_lvl_models, cascade_lvl=current_cascade_level)
+                
+                for worker_key, worker_agent in worker_agents_dict.items():
+                    print(f"{worker_key} - {worker_agent.model_id}")
+                
                 
                 # * STEP 4: Working Agents actions:
-                # * Generate initial responses    
+                # * Generate initial responses
                 initial_answers: dict[str, AgentResponse] = asyncio.run(run_cascade_initial_answer(worker_agents=worker_agents_dict, prompt_data=prompt_data, current_level=current_cascade_level))
                 
-                print(f"Question {idx}: {question_id} - {questions_mapping[question_id]}")
+                # print(f"Question {idx}: {question_id} - {questions_mapping[question_id]}")
                 for agent_initial_answer in initial_answers.values():
                     print(f"\nAgent {agent_initial_answer.author_id}: \n\tResponse: {agent_initial_answer.content}")
-            
+
                 # * Generate Critiques/Debate prompts
                 critiques: dict[str, AgentResponse] = asyncio.run(run_cascade_debate(worker_agents=worker_agents_dict, prev_answers=initial_answers, current_level=current_cascade_level))
                 
@@ -898,9 +958,49 @@ def main() -> None:
                     print(f"\nAgent {agent_final_answer.author_id}: \n\tResponse: {agent_final_answer.content}")
                 
                 # * STEP 5: Integrate Judge Agent to select the best final answer.
+                validator_prompt = ensemble_agents_answers(agents_answers=final_answers, 
+                                                            initial_question=question_prompt, 
+                                                            premise_clause=JUDGE_PROMPT_2, 
+                                                            current_cascade_level=current_cascade_level)
+                validator_answer = asyncio.run(run_validation(judge_agent=validator_agent, 
+                                                                question=question_prompt, 
+                                                                prompt=validator_prompt,
+                                                                answers=final_answers
+                                                                ))
                 
+                if validator_answer['best_answer']['best_confidence_score'] >= ACCEPTABLE_SCORE:
+                    # ANSWER GOOD
+                    synthetized_final_answer: str = asyncio.run(synthetize_final_answer(validator_agent=validator_agent, final_answers=final_answers))
+                    
+                    print(f"Synthetized final answer:\n{synthetized_final_answer}")
+                    
+                    logger.success(f"Best answer ({validator_answer['best_answer']['best_confidence_score']}) was generated by: {validator_answer['best_answer']['best_worker_model_id']} at cascade level: {current_cascade_level}, with answer: {__format_response(long_string_log=synthetized_final_answer)}.")
+                    
+                    break
+
+                # NEXT CASCADE
+                logger.info(f"Current cascade level: {current_cascade_level} did not result in good answer.")
+                logger.info(f"Best answer ({validator_answer['best_answer']['best_confidence_score']}) was generated by: {validator_answer['best_answer']['best_worker_model_id']}, with answer: {__format_response(long_string_log=final_answers[validator_answer['best_answer']['best_worker_model_id']].content)}")
                 
-        logger.success(f"Cascade level {current_cascade_level} completed.")
+                # TODO: next should be the prompt with ensembled results.
+                next_cascade_prompt: str = ensemble_agents_answers(agents_answers=final_answers, 
+                                                           initial_question=question_prompt, 
+                                                           premise_clause=NEXT_CASCADE_LEVEL_PROMPT, 
+                                                           current_cascade_level=current_cascade_level)
+                
+                prompt_data = (question_id, next_cascade_prompt)
+            # LAST LEVEL OF CASCADE WITH NO SUCCESS
+            else:
+                logger.warning(f"Last level of cascade: {current_cascade_level} done. No answer better than {ACCEPTABLE_SCORE} "
+                            f"was deducted. Falling back to best answer at this level provided by: {validator_answer['best_answer']['best_confidence_score']}")
+                logger.info(f"Best answer ({validator_answer['best_answer']['best_confidence_score']}) was generated by: {validator_answer['best_answer']['best_worker_model_id']}, with answer: {__format_response(long_string_log=final_answers[validator_answer['best_answer']['best_worker_model_id']].content)}")
+                
+                synthetized_final_answer: str = asyncio.run(synthetize_final_answer(validator_agent=validator_agent, final_answers=final_answers))
+                
+                print(synthetized_final_answer)
+            
+                logger.success(f"Cascade level {current_cascade_level} completed.")
+                # break
 
 
 if __name__ == "__main__":

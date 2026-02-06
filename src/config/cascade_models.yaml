@@ -14,8 +14,8 @@
 simple_flow:
   worker_model_1:
     # model_name: ibm-granite/granite-4.0-h-micro  # 3 Bil. | 0.017 (input) | 0.11 (output)
-    # model_name: meta-llama/llama-3.1-8b-instruct  # 8 Bil. | 0.02 (input) | 0.05 (output)
-    model_name: openrouter/free  # DEBUG
+    model_name: meta-llama/llama-3.1-8b-instruct  # 8 Bil. | 0.02 (input) | 0.05 (output)
+    # model_name: openrouter/free  # DEBUG
     short_model_name: Llama 3.1 8B Instruct
     endpoint:
       api_base_url: https://openrouter.ai/api/v1
@@ -25,8 +25,8 @@ simple_flow:
       temperature: 0.5
   worker_model_2:
     # model_name: google/gemma-3-12b-it  # 12 Bil. | 0.03 (input) | 0.10 (output)
-    # model_name: microsoft/phi-4  # 14 Bil. | 0.06 (input) | 0.14 (output)  
-    model_name: openrouter/free  # DEBUG
+    model_name: microsoft/phi-4  # 14 Bil. | 0.06 (input) | 0.14 (output)  
+    # model_name: openrouter/free  # DEBUG
     short_model_name: Microsoft Phi-4
     endpoint:
       api_base_url: https://openrouter.ai/api/v1
@@ -67,8 +67,8 @@ cascade_complex_run:
   # CASCADE LEVEL 1 - 2 worker models
   cascade_lvl_1:
     worker_model_1:
-      # model_name: meta-llama/llama-3.1-8b-instruct  # 8 Bil. | 0.02 (input) | 0.05 (output)
-      model_name: openrouter/free  # DEBUG
+      model_name: meta-llama/llama-3.1-8b-instruct  # 8 Bil. | 0.02 (input) | 0.05 (output)
+      # model_name: openrouter/free  # DEBUG
       short_model_name: Llama 3.1 8B Instruc
       endpoint:
         api_base_url: https://openrouter.ai/api/v1
@@ -78,8 +78,8 @@ cascade_complex_run:
         temperature: 0.5
     worker_model_2:
       # model_name: nvidia/nemotron-nano-9b-v2  # 9 Bil. | 0.04 (input) | 0.16 (output)
-      # model_name: ibm-granite/granite-4.0-h-micro  # 3 Bil. | 0.017 (input) | 0.11 (output)
-      model_name: openrouter/free  # DEBUG
+      model_name: ibm-granite/granite-4.0-h-micro  # 3 Bil. | 0.017 (input) | 0.11 (output)
+      # model_name: openrouter/free  # DEBUG
       short_model_name: IBM Granite 4.0 H Micro
       endpoint:
         api_base_url: https://openrouter.ai/api/v1

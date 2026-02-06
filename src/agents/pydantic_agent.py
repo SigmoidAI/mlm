@@ -232,6 +232,18 @@ class ValidatorAgent:
         self.memory.append({"type": "single", "question": question, **parsed})
         return parsed
 
+    # TODO: TEMPORARY NEW METHOD, UNDER DISCUSSION
+    async def evaluate_multiple(self, prompt: Prompt, question: str, answers: dict[str, AgentResponse]) -> dict[str, Any]:
+        print(f"Comparing {len(answers.keys())} responses")
+        
+        result = await self.judge_agent.run(prompt)
+        
+        raw = result.data if hasattr(result, 'data') else str(result.output)
+        parsed = self._parse_json(raw)
+        
+        self.memory.append({"type": "multiple", "question": question, **parsed})
+        return parsed
+    
     async def evaluate_comparison(self, question: str, answer_a: str, answer_b: str) -> Dict[str, Any]:
         """Compare two responses head-to-head."""
         prompt = (
