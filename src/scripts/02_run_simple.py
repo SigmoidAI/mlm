@@ -18,7 +18,9 @@ from typing import Any, Dict
 from dotenv import load_dotenv
 
 # Load .env file BEFORE importing modules that need env vars
-load_dotenv()
+# Use the .env file from the mlm root directory (parent of src)
+env_path = Path(__file__).parent.parent.parent / ".env"
+load_dotenv(dotenv_path=env_path)
 
 # Add src to path for direct script execution
 src_path = str(Path(__file__).parent.parent)
@@ -58,7 +60,9 @@ except (ImportError, AttributeError):
 
 MLFLOW_URI = "http://127.0.0.1:5000"
 MODEL_CONFIG_KEY = "simple_flow"  # Use simple_flow models
-DATASET_ID = "d-bb04783ae0654ead9e35c474580d71b2"
+JUDGE_MODEL_KEY = "judge_model_1"  # Select judge: judge_model_1, judge_model_2, judge_model_3
+ACCEPTABLE_SCORE = 0.9  # Threshold for accepting an answer
+DATASET_ID = "d-609991a0f29347f1a50174c33ed8b9dc"
 
 
 mlflow.set_tracking_uri(MLFLOW_URI)
@@ -88,21 +92,21 @@ def create_versioned_experiment(base_name: str) -> tuple[str, str, int]:
     from mlflow.tracking import MlflowClient
     client = MlflowClient()
     
-    existing = client.search_experiments(
-        filter_string=f"name LIKE '{base_name}_v%'",
-        order_by=["creation_time DESC"]
-    )
+    # Find all existing experiments with this base name
+    all_experiments = client.search_experiments(filter_string="name LIKE '%'")
     
     versions = []
-    for exp in existing:
-        try:
-            v = int(exp.name.split("_v")[-1])
-            versions.append(v)
-        except ValueError:
-            continue
+    for exp in all_experiments:
+        if exp.name.startswith(f"{base_name}_v"):
+            try:
+                v = int(exp.name.split("_v")[-1])
+                versions.append(v)
+            except ValueError:
+                continue
     
     next_version = max(versions, default=0) + 1
     name = f"{base_name}_v{next_version}"
+    
     exp_id = mlflow.create_experiment(name)
     print(f"Created experiment: {name}")
     return exp_id, name, next_version
@@ -145,34 +149,62 @@ def create_agent(model_config: Dict[str, Any], model_key: str) -> WorkingAgent:
 
 import yaml
 
-def load_judge_config():
+def load_judge_config(judge_key: str = JUDGE_MODEL_KEY):
+    """Load judge model config from cascade_models.yaml."""
     config_path = os.path.join(os.path.dirname(__file__), "..", "config", "cascade_models.yaml")
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
     judge_config = config.get("judge_models", {})
-    judge_key = "judge_model_1"
+    if judge_key not in judge_config:
+        raise ValueError(f"Judge key '{judge_key}' not found. Available: {list(judge_config.keys())}")
     return judge_config.get(judge_key, {})
 
-def create_judge_agent():
-    judge_cfg = load_judge_config()
+def create_judge_agent(judge_key: str = JUDGE_MODEL_KEY):
+    """Create judge agent from config."""
+    judge_cfg = load_judge_config(judge_key)
     model_name = judge_cfg.get("model_name", "")
-    endpoint = judge_cfg.get("endpoint", {})
-    api_key = endpoint.get("api_key", "")
-    return ValidatorAgent(model_name=model_name, api_key=api_key)
+    # Get API key from environment (YAML has placeholder ${OPENROUTER_API_KEY})
+    api_key = os.getenv("OPENROUTER_API_KEY", "")
+    print(f"Using judge: {judge_key} ({judge_cfg.get('short_model_name', model_name)})")
+    return ValidatorAgent(model_name=model_name, api_key=api_key, threshold=ACCEPTABLE_SCORE)
 
 def judge_answer(judge_agent, question, answer):
-    """Judge agent evaluates answer and returns (is_good, reason)."""
-    from src.models.schemas import Prompt, AgentResponse
-    prompt = Prompt(content=question, model_tier="simple")
-    answers = {"worker": AgentResponse(content=answer, author_id="worker")}
-    judge_result = judge_agent.evaluate_multiple(prompt=prompt, question=question, answers=answers)
-    # judge_result should be a dict with 'best_answer' and 'best_confidence_score'
-    if not judge_result or "best_answer" not in judge_result:
-        return False, "Judge failed"
-    best_score = judge_result["best_answer"].get("best_confidence_score", 0)
-    reason = judge_result["best_answer"].get("best_reason", "")
-    is_good = best_score >= 0.9
-    return is_good, reason or f"Score: {best_score}"
+    """Judge agent evaluates a single answer and returns (is_good, reason).
+    
+    Uses ValidatorAgent.evaluate_single() to assess the answer quality.
+    Returns True if score >= ACCEPTABLE_SCORE.
+    """
+    import asyncio
+    
+    # Use evaluate_single for one-by-one evaluation
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            import nest_asyncio
+            nest_asyncio.apply()
+        judge_result = loop.run_until_complete(
+            judge_agent.evaluate_single(question=question, answer=answer)
+        )
+    except RuntimeError:
+        judge_result = asyncio.run(
+            judge_agent.evaluate_single(question=question, answer=answer)
+        )
+    
+    # judge_result format: {"reasoning": "...", "verdict": "Valid/Invalid", "score": 0.9, "feedback": "..."}
+    if not judge_result:
+        return False, "Judge failed to evaluate"
+    
+    score = judge_result.get("score", 0.0)
+    verdict = judge_result.get("verdict", "Unknown")
+    feedback = judge_result.get("feedback", "")
+    
+    # Use ACCEPTABLE_SCORE threshold (consistent with 03_run_complex.py)
+    is_good = score >= ACCEPTABLE_SCORE and verdict == "Valid"
+    reason = f"Score: {score:.2f}, Verdict: {verdict}"
+    if feedback:
+        reason += f" - {feedback[:100]}"
+    
+    return is_good, reason
 
 
 def build_refinement_prompt(question: str, prev_answer: str, issue: str, iteration: int) -> str:
@@ -247,6 +279,8 @@ def run_evaluation():
     print(f"Experiment: {full_exp_name}")
     print(f"Config: {MODEL_CONFIG_KEY} ({num_models} models)")
     print(f"Models: {', '.join(models.keys())}")
+    print(f"Judge: {JUDGE_MODEL_KEY}")
+    print(f"Acceptable Score: {ACCEPTABLE_SCORE}")
     print(f"{'='*60}\n")
     
     success_count = 0
@@ -265,6 +299,8 @@ def run_evaluation():
                 "question_id": question_id,
                 "category": category,
                 "config_key": MODEL_CONFIG_KEY,
+                "judge_model": JUDGE_MODEL_KEY,
+                "acceptable_score": ACCEPTABLE_SCORE,
                 "num_models": num_models,
                 "version": version
             })
