@@ -56,12 +56,12 @@ except (ImportError, AttributeError):
 
 # CONSTANTS
 
-# MLflow Configuration
-MLFLOW_URI: str = "http://127.0.0.1:5000"
+# MLflow Configuration (from .env)
+MLFLOW_URI: str = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000/")
 
 # Dataset Configuration
-DATASET_EXPERIMENT_NAME: str = "DATASET_Arena_Hard"
-MLFLOW_DATASET_NAME: str = "arena_hard_auto"
+DATASET_EXPERIMENT_NAME: str = "DATASET_Arena_Hard_V2"
+MLFLOW_DATASET_NAME: str = "arena_hard_v2_0"
 
 # Model Configuration
 MODEL_CONFIG_KEY: str = "simple_flow"
@@ -441,7 +441,8 @@ def run_cascade(
 def run_evaluation() -> None:
     """Run simple flow evaluation on dataset."""
     models = load_models(MODEL_CONFIG_KEY)
-    num_models = len(models)
+    # num_models = len(models)
+    num_models = 2
     
     exp_name = f"SimpleFlow_{num_models}Models"
     exp_id, full_exp_name, version = create_versioned_experiment(exp_name)
@@ -458,7 +459,7 @@ def run_evaluation() -> None:
     
     success_count = 0
     total_iterations = 0
-    num_questions = 2  # Limit for testing; set to len(RECORDS["records"]) for full run
+    num_questions = len(RECORDS["records"])
     
     for idx, record in enumerate(RECORDS["records"][:num_questions]):
         question = record["inputs"]["question"]
