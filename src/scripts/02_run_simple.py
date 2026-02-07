@@ -39,7 +39,7 @@ from mlflow.genai.datasets import get_dataset
 import mlflow
 
 # Import WorkingAgent from agents module
-from src.agents.pydantic_agent import WorkingAgent
+from src.agents.pydantic_agent import WorkingAgent, ValidatorAgent
 
 warnings.filterwarnings("ignore", category=ResourceWarning)
 
@@ -138,26 +138,41 @@ def create_agent(model_config: Dict[str, Any], model_key: str) -> WorkingAgent:
 
 
 
+
 # -------------------------------------------------------------------------
-# Quality Check - Later this will be replaced by a Judge Model
+# Judge Agent Quality Check
 # -------------------------------------------------------------------------
 
-def check_answer_quality(answer: str, iteration: int, max_iter: int) -> tuple[bool, str]:
-    """Simple quality check. Returns (is_acceptable, reason)."""
-    if len(answer) < 50:
-        return False, "Too short"
-    
-    if len(answer) > 2000:
-        return False, "Too long"
-    
-    uncertainty = ["i don't know", "i cannot answer", "i'm not sure", "unable to provide"]
-    if any(phrase in answer.lower() for phrase in uncertainty):
-        return False, "Contains uncertainty"
-    
-    if iteration >= max_iter - 1:
-        return True, "Max iterations reached"
-    
-    return True, "Passed"
+import yaml
+
+def load_judge_config():
+    config_path = os.path.join(os.path.dirname(__file__), "..", "config", "cascade_models.yaml")
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
+    judge_config = config.get("judge_models", {})
+    judge_key = "judge_model_1"
+    return judge_config.get(judge_key, {})
+
+def create_judge_agent():
+    judge_cfg = load_judge_config()
+    model_name = judge_cfg.get("model_name", "")
+    endpoint = judge_cfg.get("endpoint", {})
+    api_key = endpoint.get("api_key", "")
+    return ValidatorAgent(model_name=model_name, api_key=api_key)
+
+def judge_answer(judge_agent, question, answer):
+    """Judge agent evaluates answer and returns (is_good, reason)."""
+    from src.models.schemas import Prompt, AgentResponse
+    prompt = Prompt(content=question, model_tier="simple")
+    answers = {"worker": AgentResponse(content=answer, author_id="worker")}
+    judge_result = judge_agent.evaluate_multiple(prompt=prompt, question=question, answers=answers)
+    # judge_result should be a dict with 'best_answer' and 'best_confidence_score'
+    if not judge_result or "best_answer" not in judge_result:
+        return False, "Judge failed"
+    best_score = judge_result["best_answer"].get("best_confidence_score", 0)
+    reason = judge_result["best_answer"].get("best_reason", "")
+    is_good = best_score >= 0.9
+    return is_good, reason or f"Score: {best_score}"
 
 
 def build_refinement_prompt(question: str, prev_answer: str, issue: str, iteration: int) -> str:
@@ -180,28 +195,21 @@ Please provide a better, more complete answer."""
 # -------------------------------------------------------------------------
 
 def run_cascade(question: str, question_id: str, models: Dict[str, Any]) -> Dict[str, Any]:
-    """Try each model until we get an acceptable answer."""
+    """Try each model until judge says answer is good."""
     model_names = list(models.keys())
     max_iter = len(model_names)
-    
     prompt = question
     history = []
     last_answer = ""
-    
+    judge_agent = create_judge_agent()
     for i, model_key in enumerate(model_names):
         config = models[model_key]
         print(f"   [{i+1}/{max_iter}] {model_key}")
-        
         agent = create_agent(config, model_key)
         result = agent.run_sync(prompt)
-        
-        # WorkingAgent.run_sync returns AgentResponse with .content
         answer = result.content
-        
         last_answer = answer
-        
-        is_good, reason = check_answer_quality(answer, i, max_iter)
-        
+        is_good, reason = judge_answer(judge_agent, question, answer)
         history.append({
             "iteration": i + 1,
             "model": model_key,
@@ -209,19 +217,15 @@ def run_cascade(question: str, question_id: str, models: Dict[str, Any]) -> Dict
             "passed": is_good,
             "reason": reason
         })
-        
         mlflow.log_metrics({
             f"iter_{i+1}_length": len(answer),
             f"iter_{i+1}_passed": 1 if is_good else 0
         })
-        
         if is_good:
             print(f"   -> {reason}")
             return {"answer": answer, "iterations": i + 1, "model": model_key, "success": True, "history": history}
-        
         print(f"   -> {reason}")
         prompt = build_refinement_prompt(question, answer, reason, i)
-    
     return {"answer": last_answer, "iterations": max_iter, "model": model_names[-1], "success": False, "history": history}
 
 
