@@ -9,16 +9,17 @@ Flow:
 5. Track everything in MLflow
 """
 
+# Standard Library Imports
+import asyncio
 import os
 import sys
-import time
+import warnings
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
+# Environment Setup (must happen before other imports)
 from dotenv import load_dotenv
 
-# Load .env file BEFORE importing modules that need env vars
-# Use the .env file from the mlm root directory (parent of src)
 env_path = Path(__file__).parent.parent.parent / ".env"
 load_dotenv(dotenv_path=env_path)
 
@@ -32,17 +33,16 @@ root_path = str(Path(__file__).parent.parent.parent)
 if root_path not in sys.path:
     sys.path.insert(0, root_path)
 
-import warnings
-
-import mlflow.pydantic_ai
+# Third-Party Imports
 import yaml
-from mlflow.genai.datasets import get_dataset
-
 import mlflow
+import mlflow.pydantic_ai
+from mlflow.genai.datasets import EvaluationDataset, search_datasets
 
-# Import WorkingAgent from agents module
+# Local Imports
 from src.agents.pydantic_agent import WorkingAgent, ValidatorAgent
 
+# Suppress Warnings
 warnings.filterwarnings("ignore", category=ResourceWarning)
 
 try:
@@ -54,16 +54,39 @@ except (ImportError, AttributeError):
     pass  # Older openai versions don't need this fix
 
 
-# -------------------------------------------------------------------------
-# Configuration
-# -------------------------------------------------------------------------
+# CONSTANTS
 
-MLFLOW_URI = "http://127.0.0.1:5000"
-MODEL_CONFIG_KEY = "simple_flow"  # Use simple_flow models
-JUDGE_MODEL_KEY = "judge_model_1"  # Select judge: judge_model_1, judge_model_2, judge_model_3
-ACCEPTABLE_SCORE = 0.9  # Threshold for accepting an answer
-DATASET_ID = "d-609991a0f29347f1a50174c33ed8b9dc"
+# MLflow Configuration
+MLFLOW_URI: str = "http://127.0.0.1:5000"
 
+# Dataset Configuration
+DATASET_EXPERIMENT_NAME: str = "DATASET_Arena_Hard"
+MLFLOW_DATASET_NAME: str = "arena_hard_auto"
+
+# Model Configuration
+MODEL_CONFIG_KEY: str = "simple_flow"
+JUDGE_MODEL_KEY: str = "judge_model_1"  # Options: judge_model_1, judge_model_2, judge_model_3
+
+# Evaluation Thresholds
+ACCEPTABLE_SCORE: float = 0.9
+
+# Prompt Templates
+SYSTEM_PROMPT: str = "You are a helpful AI assistant. Provide detailed, accurate answers."
+
+REFINEMENT_PROMPT_TEMPLATE: str = """Previous answer was not satisfactory.
+
+QUESTION:
+{question}
+
+PREVIOUS ANSWER (Attempt {attempt}):
+{prev_answer}
+
+ISSUE: {issue}
+
+Please provide a better, more complete answer."""
+
+
+# MLFLOW INITIALIZATION
 
 mlflow.set_tracking_uri(MLFLOW_URI)
 
@@ -74,25 +97,76 @@ except Exception as e:
     print(f"Autologging unavailable: {e}")
 
 
-# -------------------------------------------------------------------------
-# Load Dataset
-# -------------------------------------------------------------------------
+def create_or_get_experiment(experiment_name: str) -> str:
+    """Create experiment if it doesn't exist, otherwise return existing."""
+    experiment = mlflow.get_experiment_by_name(experiment_name)
+    if experiment is None:
+        experiment_id = mlflow.create_experiment(experiment_name)
+        print(f"Created new experiment: {experiment_name} (ID: {experiment_id})")
+    else:
+        experiment_id = experiment.experiment_id
+        print(f"Using existing experiment: {experiment_name} (ID: {experiment_id})")
+    return experiment_id
 
-dataset = get_dataset(dataset_id=DATASET_ID)
-records = dataset.to_dict()
-print(f"Loaded {len(records['records'])} records")
+
+# DATASET LOADING
+
+def get_experiment_dataset(
+    experiment_name: str = DATASET_EXPERIMENT_NAME, 
+    dataset_name: str = MLFLOW_DATASET_NAME
+) -> Optional[Dict[str, Any]]:
+    """Retrieve experiment dataset by MLFlow experiment name.
+
+    Args:
+        experiment_name: Name of the MLFlow Experiment containing a dataset.
+        dataset_name: Name of the Dataset in MLFlow Experiment.
+
+    Returns:
+        Dict representation of the dataset from MLFlow Experiment, or None if not found.
+    """
+    experiment_id = create_or_get_experiment(experiment_name=experiment_name)
+    print(f"Looking for dataset in experiment ID: {experiment_id}")
+    
+    datasets_list: list[EvaluationDataset] = search_datasets(experiment_ids=experiment_id)
+    if not datasets_list:
+        print(f"No datasets found in experiment ID: {experiment_id}")
+        return None
+    
+    print(f"Found {len(datasets_list)} dataset(s) in experiment")
+    for dataset in datasets_list:
+        if dataset.name == dataset_name:
+            print(f"Dataset '{dataset_name}' found!")
+            return dataset.to_dict()
+    
+    print(f"Dataset '{dataset_name}' not found in experiment")
+    return None
 
 
-# -------------------------------------------------------------------------
-# MLflow Helpers
-# -------------------------------------------------------------------------
+# Load dataset at module level
+_dataset_dict = get_experiment_dataset()
+if _dataset_dict is None:
+    raise RuntimeError(
+        f"Could not load dataset '{MLFLOW_DATASET_NAME}' "
+        f"from experiment '{DATASET_EXPERIMENT_NAME}'"
+    )
+RECORDS = _dataset_dict
+print(f"Loaded {len(RECORDS['records'])} records")
+
+
+# EXPERIMENT MANAGEMENT
 
 def create_versioned_experiment(base_name: str) -> tuple[str, str, int]:
-    """Create experiment with auto-incrementing version."""
+    """Create experiment with auto-incrementing version.
+    
+    Args:
+        base_name: Base name for the experiment (version suffix will be added).
+        
+    Returns:
+        Tuple of (experiment_id, full_experiment_name, version_number).
+    """
     from mlflow.tracking import MlflowClient
     client = MlflowClient()
     
-    # Find all existing experiments with this base name
     all_experiments = client.search_experiments(filter_string="name LIKE '%'")
     
     versions = []
@@ -112,13 +186,23 @@ def create_versioned_experiment(base_name: str) -> tuple[str, str, int]:
     return exp_id, name, next_version
 
 
-# -------------------------------------------------------------------------
-# Model Configuration
-# -------------------------------------------------------------------------
+# MODEL CONFIGURATION
 
-def load_models(config_key: str = "simple_flow") -> Dict[str, Any]:
-    """Load models from cascade_models.yaml by config key."""
-    config_path = os.path.join(os.path.dirname(__file__), "..", "config", "cascade_models.yaml")
+def load_models(config_key: str = MODEL_CONFIG_KEY) -> Dict[str, Any]:
+    """Load models from cascade_models.yaml by config key.
+    
+    Args:
+        config_key: Key to look up in the YAML config file.
+        
+    Returns:
+        Dictionary of model configurations.
+        
+    Raises:
+        ValueError: If config_key is not found in the YAML file.
+    """
+    config_path = os.path.join(
+        os.path.dirname(__file__), "..", "config", "cascade_models.yaml"
+    )
     
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
@@ -129,54 +213,97 @@ def load_models(config_key: str = "simple_flow") -> Dict[str, Any]:
     return config[config_key]
 
 
+def load_judge_config(judge_key: str = JUDGE_MODEL_KEY) -> Dict[str, Any]:
+    """Load judge model config from cascade_models.yaml.
+    
+    Args:
+        judge_key: Key identifying the judge model in config.
+        
+    Returns:
+        Dictionary of judge model configuration.
+        
+    Raises:
+        ValueError: If judge_key is not found in the config.
+    """
+    config_path = os.path.join(
+        os.path.dirname(__file__), "..", "config", "cascade_models.yaml"
+    )
+    
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
+    
+    judge_config = config.get("judge_models", {})
+    if judge_key not in judge_config:
+        raise ValueError(
+            f"Judge key '{judge_key}' not found. Available: {list(judge_config.keys())}"
+        )
+    
+    return judge_config.get(judge_key, {})
+
+
+# AGENT FACTORIES
+
 def create_agent(model_config: Dict[str, Any], model_key: str) -> WorkingAgent:
-    """Create WorkingAgent from model config."""
+    """Create WorkingAgent from model config.
+    
+    Args:
+        model_config: Configuration dictionary for the model.
+        model_key: Identifier key for the model.
+        
+    Returns:
+        Configured WorkingAgent instance.
+    """
     return WorkingAgent(
         model_id=model_config['model_name'],
         role_name=model_key,
-        system_instruction="You are a helpful AI assistant. Provide detailed, accurate answers.",
+        system_instruction=SYSTEM_PROMPT,
         config=model_config,
         cascade_tier=model_config.get('tier', 'primary'),
         api_key=os.getenv("OPENROUTER_API_KEY", "")
     )
 
 
-
-
-# -------------------------------------------------------------------------
-# Judge Agent Quality Check
-# -------------------------------------------------------------------------
-
-import yaml
-
-def load_judge_config(judge_key: str = JUDGE_MODEL_KEY):
-    """Load judge model config from cascade_models.yaml."""
-    config_path = os.path.join(os.path.dirname(__file__), "..", "config", "cascade_models.yaml")
-    with open(config_path, 'r') as f:
-        config = yaml.safe_load(f)
-    judge_config = config.get("judge_models", {})
-    if judge_key not in judge_config:
-        raise ValueError(f"Judge key '{judge_key}' not found. Available: {list(judge_config.keys())}")
-    return judge_config.get(judge_key, {})
-
-def create_judge_agent(judge_key: str = JUDGE_MODEL_KEY):
-    """Create judge agent from config."""
+def create_judge_agent(judge_key: str = JUDGE_MODEL_KEY) -> ValidatorAgent:
+    """Create judge agent from config.
+    
+    Args:
+        judge_key: Key identifying the judge model in config.
+        
+    Returns:
+        Configured ValidatorAgent instance.
+    """
     judge_cfg = load_judge_config(judge_key)
     model_name = judge_cfg.get("model_name", "")
-    # Get API key from environment (YAML has placeholder ${OPENROUTER_API_KEY})
     api_key = os.getenv("OPENROUTER_API_KEY", "")
+    
     print(f"Using judge: {judge_key} ({judge_cfg.get('short_model_name', model_name)})")
-    return ValidatorAgent(model_name=model_name, api_key=api_key, threshold=ACCEPTABLE_SCORE)
+    
+    return ValidatorAgent(
+        model_name=model_name, 
+        api_key=api_key, 
+        threshold=ACCEPTABLE_SCORE
+    )
 
-def judge_answer(judge_agent, question, answer):
-    """Judge agent evaluates a single answer and returns (is_good, reason).
+
+# JUDGE EVALUATION
+
+def judge_answer(
+    judge_agent: ValidatorAgent, 
+    question: str, 
+    answer: str
+) -> tuple[bool, str]:
+    """Evaluate answer quality using judge agent.
     
     Uses ValidatorAgent.evaluate_single() to assess the answer quality.
-    Returns True if score >= ACCEPTABLE_SCORE.
-    """
-    import asyncio
     
-    # Use evaluate_single for one-by-one evaluation
+    Args:
+        judge_agent: The validator agent to use for evaluation.
+        question: The original question.
+        answer: The answer to evaluate.
+        
+    Returns:
+        Tuple of (is_good, reason) where is_good is True if score >= ACCEPTABLE_SCORE.
+    """
     try:
         loop = asyncio.get_event_loop()
         if loop.is_running():
@@ -190,7 +317,6 @@ def judge_answer(judge_agent, question, answer):
             judge_agent.evaluate_single(question=question, answer=answer)
         )
     
-    # judge_result format: {"reasoning": "...", "verdict": "Valid/Invalid", "score": 0.9, "feedback": "..."}
     if not judge_result:
         return False, "Judge failed to evaluate"
     
@@ -198,50 +324,83 @@ def judge_answer(judge_agent, question, answer):
     verdict = judge_result.get("verdict", "Unknown")
     feedback = judge_result.get("feedback", "")
     
-    # Use ACCEPTABLE_SCORE threshold (consistent with 03_run_complex.py)
     is_good = score >= ACCEPTABLE_SCORE and verdict == "Valid"
     reason = f"Score: {score:.2f}, Verdict: {verdict}"
+    
     if feedback:
         reason += f" - {feedback[:100]}"
     
     return is_good, reason
 
 
-def build_refinement_prompt(question: str, prev_answer: str, issue: str, iteration: int) -> str:
-    """Build prompt that includes previous failed attempt."""
-    return f"""Previous answer was not satisfactory.
+# PROMPT BUILDING
 
-QUESTION:
-{question}
+def build_refinement_prompt(
+    question: str, 
+    prev_answer: str, 
+    issue: str, 
+    iteration: int
+) -> str:
+    """Build prompt that includes previous failed attempt.
+    
+    Args:
+        question: The original question.
+        prev_answer: The previous answer that was rejected.
+        issue: Description of why the previous answer was rejected.
+        iteration: Current iteration number (0-indexed).
+        
+    Returns:
+        Formatted refinement prompt string.
+    """
+    return REFINEMENT_PROMPT_TEMPLATE.format(
+        question=question,
+        attempt=iteration + 1,
+        prev_answer=prev_answer,
+        issue=issue
+    )
 
-PREVIOUS ANSWER (Attempt {iteration + 1}):
-{prev_answer}
 
-ISSUE: {issue}
+# CASCADE LOGIC
 
-Please provide a better, more complete answer."""
-
-
-# -------------------------------------------------------------------------
-# Cascade Logic
-# -------------------------------------------------------------------------
-
-def run_cascade(question: str, question_id: str, models: Dict[str, Any]) -> Dict[str, Any]:
-    """Try each model until judge says answer is good."""
+def run_cascade(
+    question: str, 
+    question_id: str, 
+    models: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Try each model in cascade until judge approves an answer.
+    
+    Args:
+        question: The question to answer.
+        question_id: Unique identifier for the question.
+        models: Dictionary of model configurations to try in order.
+        
+    Returns:
+        Dictionary containing:
+            - answer: The final answer (best or last)
+            - iterations: Number of models tried
+            - model: The model that produced the answer
+            - success: Whether an acceptable answer was found
+            - history: List of all attempts with details
+    """
     model_names = list(models.keys())
     max_iter = len(model_names)
     prompt = question
     history = []
     last_answer = ""
+    
     judge_agent = create_judge_agent()
+    
     for i, model_key in enumerate(model_names):
         config = models[model_key]
         print(f"   [{i+1}/{max_iter}] {model_key}")
+        
         agent = create_agent(config, model_key)
         result = agent.run_sync(prompt)
         answer = result.content
         last_answer = answer
+        
         is_good, reason = judge_answer(judge_agent, question, answer)
+        
         history.append({
             "iteration": i + 1,
             "model": model_key,
@@ -249,25 +408,38 @@ def run_cascade(question: str, question_id: str, models: Dict[str, Any]) -> Dict
             "passed": is_good,
             "reason": reason
         })
+        
         mlflow.log_metrics({
             f"iter_{i+1}_length": len(answer),
             f"iter_{i+1}_passed": 1 if is_good else 0
         })
-        if is_good:
-            print(f"   -> {reason}")
-            return {"answer": answer, "iterations": i + 1, "model": model_key, "success": True, "history": history}
+        
         print(f"   -> {reason}")
+        
+        if is_good:
+            return {
+                "answer": answer, 
+                "iterations": i + 1, 
+                "model": model_key, 
+                "success": True, 
+                "history": history
+            }
+        
         prompt = build_refinement_prompt(question, answer, reason, i)
-    return {"answer": last_answer, "iterations": max_iter, "model": model_names[-1], "success": False, "history": history}
-
-
-# -------------------------------------------------------------------------
-# Main
-# -------------------------------------------------------------------------
-
-def run_evaluation():
-    """Run simple flow evaluation on dataset."""
     
+    return {
+        "answer": last_answer, 
+        "iterations": max_iter, 
+        "model": model_names[-1], 
+        "success": False, 
+        "history": history
+    }
+
+
+# MAIN EVALUATION
+
+def run_evaluation() -> None:
+    """Run simple flow evaluation on dataset."""
     models = load_models(MODEL_CONFIG_KEY)
     num_models = len(models)
     
@@ -275,6 +447,7 @@ def run_evaluation():
     exp_id, full_exp_name, version = create_versioned_experiment(exp_name)
     mlflow.set_experiment(full_exp_name)
     
+    # Print configuration summary
     print(f"\n{'='*60}")
     print(f"Experiment: {full_exp_name}")
     print(f"Config: {MODEL_CONFIG_KEY} ({num_models} models)")
@@ -285,9 +458,9 @@ def run_evaluation():
     
     success_count = 0
     total_iterations = 0
-    num_questions = 2  # Limit for testing; set to len(records["records"]) for full run
+    num_questions = 2  # Limit for testing; set to len(RECORDS["records"]) for full run
     
-    for idx, record in enumerate(records["records"][:num_questions]):
+    for idx, record in enumerate(RECORDS["records"][:num_questions]):
         question = record["inputs"]["question"]
         question_id = record["inputs"]["question_id"]
         category = record["inputs"].get("category", "unknown")
@@ -327,6 +500,7 @@ def run_evaluation():
                 print(f"   Error: {e}\n")
                 mlflow.log_metrics({"success": 0})
     
+    # Print results summary
     avg_iter = total_iterations / num_questions if num_questions > 0 else 0
     rate = (success_count / num_questions * 100) if num_questions > 0 else 0
     
