@@ -66,14 +66,16 @@ Provide the response in the following format:
         "best_confidence_score": <best_answer_confidence_score_float_4_decimals>,
         "best_reason": <best_reason>    
     },
-    "worker_model_<id>": {
-        "confidence_score": <answer_confidence_score_float_4_decimals>,
-        "reason": <reason>,
-    },
-    "worker_model_<id>": {
-        "confidence_score": <answer_confidence_score_float_4_decimals>,
-        "reason": <reason>,
-    },
+    "individual_reviews": {
+        "worker_model_<id>": {
+            "confidence_score": <answer_confidence_score_float_4_decimals>,
+            "reason": <reason>,
+        },
+        "worker_model_<id>": {
+            "confidence_score": <answer_confidence_score_float_4_decimals>,
+            "reason": <reason>,
+        },
+    }
     ...
 }
 ```
@@ -816,11 +818,56 @@ def convert_agents_answers_to_ensemble_prompt(answers: dict[str, AgentResponse])
     return agents_answers_str
 
 
-def ensemble_agents_answers(agents_answers: dict[str, AgentResponse], 
-                            initial_question: str,
-                            premise_clause: str, 
-                            **kwargs) -> str:
+def validator_agent_response_to_agents_reviews(validator_responses: dict[str, Any]) -> dict[str, str]:
+    """Extract from ValidatorAgent judge responses each worker agent review response.
+
+    Args:
+        validator_responses (dict[str, Any]): ValidatorAgent worker agents evaluation response.
+
+    Returns:
+        dict[str, str]: Extracted review per each WorkerAgent mapped to their config ID.
+    """
     
+    workers_reviews: dict[str, str] = {}
+    
+    validator_individual_reviews: dict[str, dict[str, Any]] = validator_responses.get("individual_reviews", {})
+    
+    if not validator_individual_reviews:
+        logger.warning("No individual reviews from ValidatorAgent was found. Maybe the response is incomplete or malformed.")
+        return None
+    
+    for worker_id, worker_review in validator_individual_reviews.items():
+        individual_review: str = worker_review.get('reason', None)
+        if not individual_review: 
+            logger.warning("Individual review with invalid reason or malformed structure found. Omitting...")
+            workers_reviews[worker_id] = "N/A"
+            continue
+        
+        workers_reviews[worker_id] = individual_review
+
+    logger.success("Extracted individual answer evaluation reason.")
+    
+    print(json.dumps(workers_reviews, indent=2))
+    
+    return workers_reviews
+
+
+def ensemble_agents_answers(agents_answers: dict[str, AgentResponse], initial_question: str, premise_clause: str, agents_answers_review: dict[str, Any] = None) -> str:
+    """Helper method to ensemble multiple agents answers into a single prompt.
+
+    May be used to:
+    1. generate a prompt for next level cascade (if agents_answers_review is provided);
+    2. generate a prompt for ValidatorAgent instance (no agents_answers_review is provided).
+
+    Args:
+        agents_answers (dict[str, AgentResponse]): Worker agents answers to user or previous level cascade prompt.
+        initial_question (str): Initial question/prompt from user or previous level cascade.
+        premise_clause (str): Initial statement in the prompt. This function supports prompt ensembling both for ValidatorAgent and next level cascade workers.
+        agents_answers_review (dict[str, AgentResponse]): ValidatorAgent instance review to worker agents answers. Defaults to None.
+
+    Returns:
+        str: Ensembled prompt with worker agents responses and their review (if provided).
+    """
     ensembled_workers_answers: str = f"""
 {premise_clause}
 
@@ -831,13 +878,52 @@ ANSWERS:
 {convert_agents_answers_to_ensemble_prompt(answers=agents_answers).strip()}
     """
     
+    if agents_answers_review:
+        logger.info(f"Ensembling judge reasoning for each worker agent: {len(agents_answers.keys())} response.")
+        reviews: dict[str, str] = validator_agent_response_to_agents_reviews(validator_responses=agents_answers_review)
+        
+        if reviews:
+            logger.info("Appending ensembled prompt with judge reviews.")
+            review_blocks: list[str] = []
+            
+            validator_review_section = "\n\nVALIDATOR REVIEWS:\n"
+            
+            for worker_id, worker_review in reviews.items():
+                logger.info(f"Appending ensembled prompt with review for: {worker_id} - {__format_response(long_string_log=worker_review)}.")
+                review_blocks.append(
+                    f"""
+<{worker_id}_review_start>
+{worker_review}
+<{worker_id}_review_end>
+""".strip()
+                )
+                
+            validator_review_section += (
+                "<validator_reviews_start>\n"
+                + "\n\n".join(review_blocks)
+                + "\n<validator_reviews_end>"
+            )
+            
+            ensembled_workers_answers += validator_review_section
+            logger.success("Succesfully appended review section to ensembled answers.")
+            
     print(ensembled_workers_answers)
     
     logger.success(f"Ensembled prompt was built: {__format_response(long_string_log=ensembled_workers_answers)}")
     return ensembled_workers_answers
-
-
+    
+    
+# TODO: update
 async def synthetize_final_answer(validator_agent: ValidatorAgent, final_answers: dict[str, AgentResponse]) -> AgentResponse:
+    """_summary_
+
+    Args:
+        validator_agent (ValidatorAgent): _description_
+        final_answers (dict[str, AgentResponse]): _description_
+
+    Returns:
+        AgentResponse: _description_
+    """
     final_response: AgentResponse = await validator_agent.synthesize_final(responses=final_answers.values())
     return final_response.content
 
@@ -960,19 +1046,19 @@ def main() -> None:
                     print(f"\nAgent {agent_final_answer.author_id}: \n\tResponse: {agent_final_answer.content}")
                 
                 # * STEP 5: Integrate Judge Agent to select the best final answer.
-                validator_prompt = ensemble_agents_answers(agents_answers=final_answers, 
-                                                            initial_question=question_prompt, 
-                                                            premise_clause=JUDGE_PROMPT_2, 
-                                                            current_cascade_level=current_cascade_level)
-                validator_answer = asyncio.run(run_validation(judge_agent=validator_agent, 
-                                                                question=question_prompt, 
-                                                                prompt=validator_prompt,
-                                                                answers=final_answers
-                                                                ))
+                validator_prompt: str = ensemble_agents_answers(agents_answers=final_answers, 
+                                                                initial_question=question_prompt, 
+                                                                premise_clause=JUDGE_PROMPT_2)
+                validator_answer: dict[str, Any] = asyncio.run(run_validation(judge_agent=validator_agent,
+                                                                              question=question_prompt,
+                                                                              prompt=validator_prompt,
+                                                                              answers=final_answers))
                 
                 if validator_answer['best_answer']['best_confidence_score'] >= ACCEPTABLE_SCORE:
                     # ANSWER GOOD
                     synthetized_final_answer: str = asyncio.run(synthetize_final_answer(validator_agent=validator_agent, final_answers=final_answers))
+                    
+                    # TODO: manual trace best so far even if lower score.
                     
                     print(f"Synthetized final answer:\n{synthetized_final_answer}")
                     print(f"FINAL ANSWER (DIRECT FROM WORKER):\n{final_answers[validator_answer['best_answer']['best_worker_model_id']].content}")
@@ -985,11 +1071,11 @@ def main() -> None:
                 logger.info(f"Current cascade level: {current_cascade_level} did not result in good answer.")
                 logger.info(f"Best answer ({validator_answer['best_answer']['best_confidence_score']}) was generated by: {validator_answer['best_answer']['best_worker_model_id']}, with answer: {__format_response(long_string_log=final_answers[validator_answer['best_answer']['best_worker_model_id']].content)}")
                 
-                # TODO: next should be the prompt with ensembled results.
+                # ? TODO: for next cascade level, next should be the prompt with ensembled results (done) + each reason for the score for each worker model. - DONE
                 next_cascade_prompt: str = ensemble_agents_answers(agents_answers=final_answers, 
-                                                           initial_question=question_prompt, 
-                                                           premise_clause=NEXT_CASCADE_LEVEL_PROMPT, 
-                                                           current_cascade_level=current_cascade_level)
+                                                                   initial_question=question_prompt, 
+                                                                   premise_clause=NEXT_CASCADE_LEVEL_PROMPT, 
+                                                                   agents_answers_review=validator_answer)
                 
                 prompt_data = (question_id, next_cascade_prompt)
             # LAST LEVEL OF CASCADE WITH NO SUCCESS
@@ -999,6 +1085,8 @@ def main() -> None:
                 logger.info(f"Best answer ({validator_answer['best_answer']['best_confidence_score']}) was generated by: {validator_answer['best_answer']['best_worker_model_id']}, with answer: {__format_response(long_string_log=final_answers[validator_answer['best_answer']['best_worker_model_id']].content)}")
                 
                 synthetized_final_answer: str = asyncio.run(synthetize_final_answer(validator_agent=validator_agent, final_answers=final_answers))
+                
+                # TODO: manual trace best so far even if lower score.
                 
                 print(synthetized_final_answer)
                 print(f"FINAL ANSWER (DIRECT FROM WORKER):\n{final_answers[validator_answer['best_answer']['best_worker_model_id']].content}")
