@@ -25,6 +25,7 @@ Assess the responses based on:
 You must output a single JSON block strictly following this schema. Do not output markdown code blocks around it, just the raw JSON.
 
 If analyzing a single response:
+```json
 {
   "type": "single_evaluation",
   "reasoning": "Step-by-step analysis of flaws and merits...",
@@ -32,14 +33,31 @@ If analyzing a single response:
   "score": 0.9,        // Float 0.0 to 1.0
   "feedback": "Specific instructions on how to fix the errors."
 }
+```
 
-If comparing two responses (A vs B):
+If analyzing multiple answers:
+```json
 {
-  "type": "comparison",
-  "reasoning": "Comparison of A vs B, highlighting why one is superior...",
-  "verdict": "[[A>B]]", // Options: [[A>>B]], [[A>B]], [[A=B]], [[B>A]], [[B>>A]]
-  "winner": "A"         // or "B" or "Tie"
+  "type": "multiple_evaluation"
+  "question": <question>,
+  "best_answer": {
+      "best_worker_model_id": <best_worker_model_<id>>,
+      "best_confidence_score": <best_answer_confidence_score_float_4_decimals>,
+      "best_reason": <best_reason>
+  },
+  "individual_reviews": {
+      "worker_model_<id>": {
+          "confidence_score": <answer_confidence_score_float_4_decimals>,
+          "reason": <reason>,
+      },
+      "worker_model_<id>": {
+          "confidence_score": <answer_confidence_score_float_4_decimals>,
+          "reason": <reason>,
+      },
+  }
+  ...
 }
+```
 """
 
 ARENA_HARD_JUDGE_PROMPT = """Please act as an impartial judge and evaluate the quality of the responses provided by two AI assistants to the user prompt displayed below. You will be given assistant A's answer and assistant B's answer. Your job is to evaluate which assistant's answer is better.
