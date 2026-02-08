@@ -1,10 +1,12 @@
 import argparse
 import asyncio
 import json
+import os
 import uuid
 from typing import Any, Coroutine, Optional, Union
 
 from loguru import logger
+from mlflow.entities import SpanType
 from mlflow.genai.datasets import EvaluationDataset, search_datasets  # get_dataset
 
 import mlflow
@@ -29,14 +31,141 @@ USER_PROMPT: str = {
 IS_COMPLEX: bool = True
 
 # EXPERIMENT DATASET
-DATASET_EXPERIMENT_NAME: str = "DATASET_Arena_Hard"
-MLFLOW_DATASET_NAME: str = "arena_hard_auto"
+DATASET_EXPERIMENT_NAME: str = "DATASET_Arena_Hard_V2"
+MLFLOW_DATASET_NAME: str = "arena_hard_v2_0"
+
+# DATASET_EXPERIMENT_NAME: str = "DATASET_Arena_Hard"
+# MLFLOW_DATASET_NAME: str = "arena_hard_auto"
 
 # CONFIGURATION
 
 # PROMPTS
-WORKING_AGENT_PROMPT: str = "You are a helpful AI assistant. Provide detailed, accurate answers."
-NEXT_CASCADE_LEVEL_PROMPT: str = "Previous cascade level worker agents did not succeed to answer properly user question/prompt. Analyze the question and their answers and generate better results:"
+# LOW STRICT
+WORKING_AGENT_SYSTEM_PROMPT_1: str = "You are a helpful AI assistant. Provide detailed, accurate answers."
+
+# VERY STRICT
+WORKING_AGENT_SYSTEM_PROMPT_2: str = """
+You are a precise, focused AI assistant. Your primary objective is to provide direct, accurate answers that strictly address the user's specific question.
+
+## Core Principles:
+
+1. **Strict Relevance**: Answer ONLY what is asked. Do not provide tangential information, background context, or related topics unless explicitly requested.
+
+2. **Precision Over Elaboration**: Favor concise, exact answers over comprehensive explanations. If the question is specific, your answer must be equally specific.
+
+3. **Question Adherence**: Continuously evaluate whether each sentence directly serves the user's question. Eliminate any content that strays from the core query.
+
+4. **Factual Accuracy**: Provide verifiable, accurate information. If uncertain, state the limitation rather than speculating.
+
+5. **Structured Clarity**: When multiple points are needed, structure them logically and maintain tight focus on the question's scope.
+
+## Response Guidelines:
+
+- Begin with the most direct answer to the question
+- Avoid preambles, disclaimers, or unnecessary context unless critical
+- Do not expand into related topics the user didn't ask about
+- Keep examples minimal and directly relevant
+- Resist the urge to be comprehensive; be surgically precise instead
+
+## Handling Refinement Reviews:
+
+When you receive refinement feedback from other assistants:
+- Critically evaluate the feedback against the original question's intent
+- Apply only refinements that enhance precision and relevance to the specific query
+- Reject suggestions that add tangential content or reduce focus
+- Maintain your analytical independence—refinements are advisory, not mandatory
+- Prioritize the user's original question over the refinement suggestions
+
+## Output Standard:
+
+Every response must pass this test: "Does every sentence directly answer the user's specific question?" If not, remove it.
+
+Stay focused. Stay precise. Answer the question asked, nothing more, nothing less.
+"""
+
+# MEDIUM STRICT
+WORKING_AGENT_SYSTEM_PROMPT_3: str = """
+You are a focused and helpful AI assistant. Your objective is to provide accurate, relevant answers that directly address the user's question while including necessary context and clarity.
+
+## Core Principles:
+
+1. **Relevant Focus**: Prioritize answering the specific question asked. Include helpful context or examples when they enhance understanding, but avoid unrelated tangents.
+
+2. **Balanced Depth**: Provide enough detail to be truly helpful without over-explaining. Aim for clarity and completeness within the question's scope.
+
+3. **Question-Centered**: Ensure your answer serves the user's actual need. Add clarifying information when it directly supports the answer.
+
+4. **Accuracy First**: Provide verifiable, correct information. Acknowledge limitations when appropriate.
+
+5. **Clear Structure**: Organize information logically. Use examples and explanations that illuminate the answer.
+
+## Response Guidelines:
+
+- Lead with the direct answer, then provide supporting details
+- Include brief context when it aids understanding
+- Use relevant examples to clarify concepts
+- Keep explanations proportional to the question's complexity
+- Avoid wandering into distantly related topics
+
+## Refinement Integration:
+
+When refining your previous response:
+- Seamlessly incorporate improvements into your answer
+- Present the refined version as a natural, cohesive response
+- Do not reference previous versions, suggestions, or the refinement process
+- Integrate additions and modifications as if this is your first, complete answer
+- Maintain consistency in tone and style throughout
+
+## Output Standard:
+
+Your response should be comprehensive enough to be helpful while remaining clearly connected to the user's specific question. Balance thoroughness with relevance.
+
+Be helpful. Be clear. Stay on point.
+"""
+
+# NEXT LEVEL CASCADE
+NEXT_CASCADE_LEVEL_PROMPT_1: str = "Previous cascade level worker agents did not succeed to answer properly user question/prompt. Analyze the question and their answers and generate better results:"
+
+NEXT_CASCADE_LEVEL_PROMPT_2: str = """
+Previous cascade level worker agents did not succeed to answer properly user question/prompt. Analyze the question and their answers and generate better results.
+
+## Core Principles:
+
+1. **Relevant Focus**: Prioritize answering the specific question asked. Include helpful context or examples when they enhance understanding, but avoid unrelated tangents.
+
+2. **Balanced Depth**: Provide enough detail to be truly helpful without over-explaining. Aim for clarity and completeness within the question's scope.
+
+3. **Question-Centered**: Ensure your answer serves the user's actual need. Add clarifying information when it directly supports the answer.
+
+4. **Accuracy First**: Provide verifiable, correct information. Acknowledge limitations when appropriate.
+
+5. **Clear Structure**: Organize information logically. Use examples and explanations that illuminate the answer.
+
+## Response Guidelines:
+
+- Lead with the direct answer, then provide supporting details
+- Include brief context when it aids understanding
+- Use relevant examples to clarify concepts
+- Keep explanations proportional to the question's complexity
+- Avoid wandering into distantly related topics
+
+## Refinement Integration:
+
+When refining your previous response:
+- Seamlessly incorporate improvements into your own answer
+- Present the refined version as a natural, cohesive response
+- Do not reference previous versions, suggestions, or the refinement process
+- Integrate additions and modifications as if this is your first, complete answer
+- Maintain consistency in tone and style throughout
+
+## Output Standard:
+
+Your response should be comprehensive enough to be helpful while remaining clearly connected to the user's specific question. Balance thoroughness with relevance.
+
+Be helpful. Be clear. Stay on point.
+"""
+
+# JUDGE
 JUDGE_PROMPT_1: str = """
 Worker agents provided the following answers to the initial question. 
 Analyze the question and their answers and start a voting process for the best answer.
@@ -65,14 +194,68 @@ Provide the response in the following format:
         "best_confidence_score": <best_answer_confidence_score_float_4_decimals>,
         "best_reason": <best_reason>    
     },
-    "worker_model_<id>": {
-        "confidence_score": <answer_confidence_score_float_4_decimals>,
-        "reason": <reason>,
+    "individual_reviews": {
+        "worker_model_<id>": {
+            "confidence_score": <answer_confidence_score_float_4_decimals>,
+            "reason": <reason>,
+        },
+        "worker_model_<id>": {
+            "confidence_score": <answer_confidence_score_float_4_decimals>,
+            "reason": <reason>,
+        },
+    }
+    ...
+}
+```
+"""
+
+JUDGE_PROMPT_3: str = """
+Worker agents provided the following answers to the initial question. 
+
+Analyze the question and their answers and start a voting process for the best answer.
+
+Be impartial and serve as an objective critic.
+
+When evaluating take into consideration:
+## Evaluation Criteria:
+1. Identify the specific task requested in the input
+2. Determine all requirements and constraints mentioned
+3. Check if the output fulfills each requirement
+4. Verify the output format matches any specified format
+5. Assess completeness - are all parts of the task done?
+6. Validate the quality of task execution
+
+Provide in individual reviews a reason/feedback why the answer was graded with that specific score. 
+Make sure these reasons/feedback are independent between other workers reviews.
+Evaluation Instructions:
+
+Evaluate whether the output successfully completes the requested task.
+
+Assign a score from 0.0000 to 1.0000 where:
+
+- 1.0000 = Task fully completed with all requirements met.
+- range between 0.0000 and 1.0000 = Determined how partially/ what grade of the task completion as a float 4 decimals after point.
+- 0.0000 = Task not completed or attempted.
+
+Provide the response in the following format:
+```json
+{
+    "question": <question>,
+    "best_answer": {
+        "best_worker_model_id": <best_worker_model_<id>>,
+        "best_confidence_score": <best_answer_confidence_score_float_4_decimals>,
+        "best_reason": <best_reason>    
     },
-    "worker_model_<id>": {
-        "confidence_score": <answer_confidence_score_float_4_decimals>,
-        "reason": <reason>,
-    },
+    "individual_reviews": {
+        "worker_model_<id>": {
+            "confidence_score": <answer_confidence_score_float_4_decimals>,
+            "reason": <reason>,
+        },
+        "worker_model_<id>": {
+            "confidence_score": <answer_confidence_score_float_4_decimals>,
+            "reason": <reason>,
+        },
+    }
     ...
 }
 ```
@@ -88,10 +271,11 @@ JUDGE_MODEL_KEY: str = "judge_model_1"
 ACCEPTABLE_SCORE: float = 0.9
 
 # CASCADE LEVEL
-CASCADE_LEVEL: int = 5
+MAX_CASCADE_LEVEL: int = 5
 
 # MLFLOW
-MLFLOW_TRACKING_URI: str = "http://127.0.0.1:5000" # os.getenv(key="MLFLOW_TRACKING_URI")
+# MLFLOW_TRACKING_URI: str = "http://127.0.0.1:5000"
+MLFLOW_TRACKING_URI: str = os.getenv(key="MLFLOW_TRACKING_URI", default="http://127.0.0.1:5000")
 EXPERIMENT_NAME: str = "complex_workflow_run"
 
 def perform_initial_mlflow_setup(mlflow_uri: str) -> None:
@@ -305,37 +489,6 @@ def load_models_from_config(config: dict[str, Any], config_class_key: str, confi
     logger.success(f"Succesfully retrieved subclass: {config_subclass_key} models configuration.")
     
     return models_subclass_config
-    
-# def load_cascade_level_specific_models(config: dict[str, Any], 
-#                                        cascade_level: int, 
-#                                        config_key: str) -> Optional[dict[str, Any]]:
-#     """Dynamically load from configuration file and extract specific cascade level models.
-
-#     Args:
-#         config (dict[str, Any]): Configuration file in dict format.
-#         cascade_level (int, optional): Cascade level to look for models.
-#         config_key (str, optional): Key of the complex cascade subset of models.
-
-#     Returns:
-#         Optional[tuple[dict[str, Any], int]]: Specific cascade models configuration at a specific cascade level and corresponding cascade level as a tuple. None if config entry or cascade models not found.
-#     """
-#     logger.info(f"Retrieving cascade models configuration: {config_key} at level: {cascade_level}.")
-#     cascade_models_config: dict[str, Any] = config.get(config_key, {})
-    
-#     if not cascade_models_config:
-#         logger.error(f"No config entry with key: {config_key}.")
-#         return None
-#     logger.success(f"Succefully retrieved config entry with key: {config_key}")
-    
-#     key = f"cascade_lvl_{cascade_level}"
-#     logger.info(f"Looking for cascade level: {key} in configuration file.")
-
-#     if key not in cascade_models_config:
-#         logger.error(f"No cascade level: {key} found in configuration file.")
-#         return None
-    
-#     logger.success(f"Succesfully retrieved cascade models configuration at level: {cascade_level}")
-#     return cascade_models_config[key]
 
 
 def initialize_worker_agents(models_config: dict[str, dict[str, Any]], cascade_lvl: int) -> dict[str, WorkingAgent]: # Optional[dict[str, WorkingAgent]]:
@@ -359,13 +512,11 @@ def initialize_worker_agents(models_config: dict[str, dict[str, Any]], cascade_l
         if any(x is None for x in [model_name, endpoint_struct, parameters_struct]):
             logger.warning("Malformed cascade model configuration found. Skipping...")
             continue
-            # return None
         
         worker_agents_dict[worker_key] = WorkingAgent(
-            # model_id=f"{model_name}/{uuid.uuid4()}", # uuid.uuid4(),
             model_id=model_name,
             role_name=worker_key,
-            system_instruction=WORKING_AGENT_PROMPT,
+            system_instruction=WORKING_AGENT_SYSTEM_PROMPT_2,
             cascade_tier=cascade_lvl,
             config=worker_config, # parameters_struct,
             api_key=endpoint_struct.get('api_key', None)
@@ -426,44 +577,6 @@ def __format_response(long_string_log: str, len_portion: int = None) -> str:
     left_portion: str = long_string_log[:len_portion + 1]
     right_portion: str = long_string_log[-(len_portion + 1):]
     return f"{__clean_full_string(string_to_clean=left_portion)}...{__clean_full_string(string_to_clean=right_portion)}"
-    
-    # table = str.maketrans("\n\t\r", "   ")
-    # return f"{left_portion.translate(table)}...{right_portion.translate(table)}"
-
-# async def run_working_multiple_agents(worker_agents: dict[str, WorkingAgent], prompt_questions: dict[str, str]) -> dict[str, AgentResponse]:
-#     """Run all working agents on the same cascade level in parallel to generate answers to the same prompt.
-
-#     Args:
-#         worker_agents (dict[str, WorkingAgent]): Dictionary mapping agent IDs to WorkingAgent instances.
-#         prompt_questions (dict[str, str]): The question/prompt strings to send to appropriate agent.
-
-#     Returns:
-#         dict[str, AgentResponse]: Dict of AgentResponse objects mapped to their own agent ID - answers from the agents to the prompt.
-#     """
-#     tasks = []
-#     for worker_id, worker_agent in worker_agents.items():
-#         designated_prompt: Prompt = Prompt(content=prompt_questions.get(worker_id), model_tier='complex')
-#         logger.info(f"Created Prompt object from prompt question: \"{__format_response(long_string_log=designated_prompt.content)}\" for worker agent: {worker_agent.model_id}")
-#         tasks.append(worker_agent.generate(context=designated_prompt))
-    
-#     logger.info("Created coroutines for working agents answer generation.")
-    
-#     answers: list[AgentResponse] = await asyncio.gather(*tasks, return_exceptions=True)
-    
-#     agents_responses: dict[str, AgentResponse] = {}
-#     agent_ids: list[str] = list(worker_agents.keys())
-    
-#     for idx, response in enumerate(answers):
-#         agent_id = agent_ids[idx]
-#         if isinstance(response, Exception):
-#             # Since order of results is preserved by asyncio.gather() function in the same order as awaitables in *aws = *tasks
-#             logger.error(f"Agent {agent_id} failed: {response}")
-#         else:
-#             logger.success(f"Agent {agent_id} succeeded: {__format_response(long_string_log=response.content)}")
-#             agents_responses[agent_id] = response
-            
-#     logger.success(f"Generated {len(agents_responses.keys())} valid responses out of {len(worker_agents)} agents")
-#     return agents_responses
 
 
 async def run_working_agent(worker_agent: tuple[str, WorkingAgent], func: Coroutine, **kwargs) -> tuple[str, AgentResponse]:
@@ -535,37 +648,6 @@ async def run_cascade_initial_answer(worker_agents: dict[str, WorkingAgent], pro
             
     logger.success(f"Generated {len(agents_responses.keys())} valid responses out of {len(worker_agents)} agents")
     return agents_responses
-
-# async def run_cascade_initial_answer(worker_agents: dict[str, WorkingAgent], prompt_data: tuple[str, str], current_level: int = 1) -> Optional[dict[str, AgentResponse]]:
-#     """Generate initial answers concurrently.
-
-#     Args:
-#         worker_agents (dict[str, WorkingAgent]): List of WorkingAgent object.
-#         prompt_data (tuple[str, str]): User prompt.
-#         current_level (int, optional): Current level of the cascade. Defaults to 1.
-
-#     Returns:
-#         Optional[dict[str, AgentResponse]]: Mapping of AgentResponse objects to the user prompt.
-#     """
-#     prompt_id, prompt_question = prompt_data
-#     logger.info(f"Starting initial answer generation at cascade level: {current_level} with: {len(worker_agents.keys())} working agents and with prompt with ID: {prompt_id} - \"{__format_response(long_string_log=prompt_question)}\"")
-    
-#     prompt_question_dict: dict[str, str] = {
-#         agent_id: prompt_question for agent_id in worker_agents.keys()
-#     }
-    
-#     logger.info("Invoking working agents")
-#     responses: dict[str, AgentResponse] = await run_working_multiple_agents(
-#         worker_agents=worker_agents,
-#         prompt_questions=prompt_question_dict
-#     )
-
-#     if not responses:
-#         logger.error("No valid responses received. Stopping.")
-#         return None
-    
-#     logger.success(f"Initial cascade phase of answer generation completed. Processed prompt with ID: {prompt_id}.")
-#     return responses
 
 
 async def run_cascade_debate(worker_agents: dict[str, WorkingAgent], prev_answers: dict[str, AgentResponse], current_level: int = 1) -> Optional[dict[str, AgentResponse]]:
@@ -815,11 +897,56 @@ def convert_agents_answers_to_ensemble_prompt(answers: dict[str, AgentResponse])
     return agents_answers_str
 
 
-def ensemble_agents_answers(agents_answers: dict[str, AgentResponse], 
-                            initial_question: str,
-                            premise_clause: str, 
-                            **kwargs) -> str:
+def validator_agent_response_to_agents_reviews(validator_responses: dict[str, Any]) -> dict[str, str]:
+    """Extract from ValidatorAgent judge responses each worker agent review response.
+
+    Args:
+        validator_responses (dict[str, Any]): ValidatorAgent worker agents evaluation response.
+
+    Returns:
+        dict[str, str]: Extracted review per each WorkerAgent mapped to their config ID.
+    """
     
+    workers_reviews: dict[str, str] = {}
+    
+    validator_individual_reviews: dict[str, dict[str, Any]] = validator_responses.get("individual_reviews", {})
+    
+    if not validator_individual_reviews:
+        logger.warning("No individual reviews from ValidatorAgent was found. Maybe the response is incomplete or malformed.")
+        return None
+    
+    for worker_id, worker_review in validator_individual_reviews.items():
+        individual_review: str = worker_review.get('reason', None)
+        if not individual_review: 
+            logger.warning("Individual review with invalid reason or malformed structure found. Omitting...")
+            workers_reviews[worker_id] = "N/A"
+            continue
+        
+        workers_reviews[worker_id] = individual_review
+
+    logger.success("Extracted individual answer evaluation reason.")
+    
+    print(json.dumps(workers_reviews, indent=2))
+    
+    return workers_reviews
+
+
+def ensemble_agents_answers(agents_answers: dict[str, AgentResponse], initial_question: str, premise_clause: str, agents_answers_review: dict[str, Any] = None) -> str:
+    """Helper method to ensemble multiple agents answers into a single prompt.
+
+    May be used to:
+    1. generate a prompt for next level cascade (if agents_answers_review is provided);
+    2. generate a prompt for ValidatorAgent instance (no agents_answers_review is provided).
+
+    Args:
+        agents_answers (dict[str, AgentResponse]): Worker agents answers to user or previous level cascade prompt.
+        initial_question (str): Initial question/prompt from user or previous level cascade.
+        premise_clause (str): Initial statement in the prompt. This function supports prompt ensembling both for ValidatorAgent and next level cascade workers.
+        agents_answers_review (dict[str, AgentResponse]): ValidatorAgent instance review to worker agents answers. Defaults to None.
+
+    Returns:
+        str: Ensembled prompt with worker agents responses and their review (if provided).
+    """
     ensembled_workers_answers: str = f"""
 {premise_clause}
 
@@ -830,15 +957,125 @@ ANSWERS:
 {convert_agents_answers_to_ensemble_prompt(answers=agents_answers).strip()}
     """
     
+    if agents_answers_review:
+        logger.info(f"Ensembling judge reasoning for each worker agent: {len(agents_answers.keys())} response.")
+        reviews: dict[str, str] = validator_agent_response_to_agents_reviews(validator_responses=agents_answers_review)
+        
+        if reviews:
+            logger.info("Appending ensembled prompt with judge reviews.")
+            review_blocks: list[str] = []
+            
+            validator_review_section = "\n\nVALIDATOR REVIEWS:\n"
+            
+            for worker_id, worker_review in reviews.items():
+                logger.info(f"Appending ensembled prompt with review for: {worker_id} - {__format_response(long_string_log=worker_review)}.")
+                review_blocks.append(
+                    f"""
+<{worker_id}_review_start>
+{worker_review}
+<{worker_id}_review_end>
+""".strip()
+                )
+                
+            validator_review_section += (
+                "<validator_reviews_start>\n"
+                + "\n\n".join(review_blocks)
+                + "\n<validator_reviews_end>"
+            )
+            
+            ensembled_workers_answers += validator_review_section
+            logger.success("Succesfully appended review section to ensembled answers.")
+            
     print(ensembled_workers_answers)
     
     logger.success(f"Ensembled prompt was built: {__format_response(long_string_log=ensembled_workers_answers)}")
     return ensembled_workers_answers
 
-
+    
+# TODO: update this method with other way of checking
 async def synthetize_final_answer(validator_agent: ValidatorAgent, final_answers: dict[str, AgentResponse]) -> AgentResponse:
+    """_summary_
+
+    Args:
+        validator_agent (ValidatorAgent): _description_
+        final_answers (dict[str, AgentResponse]): _description_
+
+    Returns:
+        AgentResponse: _description_
+    """
     final_response: AgentResponse = await validator_agent.synthesize_final(responses=final_answers.values())
     return final_response.content
+
+
+def log_final_answer_trace(question_id: str, 
+                           question_prompt: str, 
+                           is_definitive: bool, 
+                           synthetized_answer: str, 
+                           best_worker_model_id: str, 
+                           cascade_level: int, 
+                           best_confidence_score: float) -> None:
+    """Log the final answer trace to MLflow.
+
+    Args:
+        question_id (str): ID of the question.
+        question_prompt (str): Original question text.
+        is_definitive (bool): Flag to show if the log is for the final answer
+        synthetized_answer (str): Final synthesized answer.
+        best_worker_model_id (str): ID of the best performing worker model.
+        cascade_level (int): Cascade level where answer was found.
+        best_confidence_score (float): Confidence score of the answer.
+    """
+    logger.info(
+        f"Attempting to trace manually best answer ({best_confidence_score}) to question: {question_id} - "
+        f"{__format_response(long_string_log=question_prompt)} was generated by: {best_worker_model_id} "
+        f"at cascade level: {cascade_level}, with answer: {__format_response(long_string_log=synthetized_answer)}."
+    )
+    
+    answer_trace = {
+        "input": question_prompt,
+        "output": synthetized_answer,
+        "is_definitive": is_definitive,
+        "question_id": question_id,
+        "final_best_model" if is_definitive else "best_model": best_worker_model_id,
+        "final_cascade_level" if is_definitive else "cascade_level": cascade_level,
+        "final_best_confidence_score" if is_definitive else "best_confidence_score": best_confidence_score
+    }
+    
+    with mlflow.start_span(name="best_final_answer_trace" if is_definitive else f"best_answer_trace_lvl_{cascade_level}", 
+                           span_type=SpanType.LLM) as current_span:
+        current_span.set_inputs(
+            inputs={
+                "question_id": question_id,
+                "question": question_prompt,
+                "is_definitive": is_definitive
+            }
+        )
+        
+        current_span.set_attributes(
+            attributes=answer_trace
+        )
+        
+        current_span.set_outputs(
+            outputs={
+                "final_best_response" if is_definitive else f"best_response_lvl_{cascade_level}": synthetized_answer,
+                "final_best_model" if is_definitive else f"best_model_lvl_{cascade_level}": best_worker_model_id,
+                "final_best_confidence_score_lvl" if is_definitive else f"best_confidence_score_lvl_{cascade_level}": best_confidence_score
+            }
+        )
+    
+    if is_definitive:
+        try:
+            mlflow.log_dict(answer_trace, "final_answer.json")
+            mlflow.log_metric("final_best_confidence_score", best_confidence_score)
+            mlflow.log_metric("final_cascade_level", cascade_level)
+            mlflow.log_param("final_best_model", best_worker_model_id)
+            
+            logger.success(f"Logged final answer artifacts and metrics for question: {question_id}")
+        except Exception as e:
+            logger.error(f"Failed to log final answer artifacts: {e}")
+            return
+    
+    logger.success(f"Logged final answer trace for question: {question_id}")
 
 
 def main() -> None:
@@ -892,6 +1129,7 @@ def main() -> None:
     print(json.dumps(judge_models, indent=2))
     
     for idx, (question_id, question_data) in enumerate(questions_mapping.items()):
+        original_question = question_data['question']
         question_prompt = question_data['question']
         question_category = question_data['category']
         logger.info(f"[{idx + 1}/{len(questions_mapping.keys())}] Processing prompt with ID: {question_id} - {question_category} - \"{question_prompt}\"")
@@ -915,12 +1153,14 @@ def main() -> None:
             })
             prompt_data: tuple[str, str] = (question_id, question_prompt)
             
-            for current_cascade_level in range(1, CASCADE_LEVEL + 1):
+            for current_cascade_level in range(1, MAX_CASCADE_LEVEL + 1):
                 logger.info(f"Entering cascade level {current_cascade_level}.")
                 
                 # * STEP 3: Configuring Agents
                 # * Loading complex run config models
-                cascade_lvl_models = load_models_from_config(config=CASCADE_MODELS_CONFIG, config_class_key=COMPLEX_RUN_CONFIG_KEY, config_subclass_key=f"cascade_lvl_{current_cascade_level}")
+                cascade_lvl_models = load_models_from_config(config=CASCADE_MODELS_CONFIG, 
+                                                             config_class_key=COMPLEX_RUN_CONFIG_KEY, 
+                                                             config_subclass_key=f"cascade_lvl_{current_cascade_level}")
                 print(json.dumps(cascade_lvl_models, indent=2))
                 
                 # * Instantiate Agents using working models configs
@@ -932,14 +1172,18 @@ def main() -> None:
                 
                 # * STEP 4: Working Agents actions:
                 # * Generate initial responses
-                initial_answers: dict[str, AgentResponse] = asyncio.run(run_cascade_initial_answer(worker_agents=worker_agents_dict, prompt_data=prompt_data, current_level=current_cascade_level))
+                initial_answers: dict[str, AgentResponse] = asyncio.run(run_cascade_initial_answer(worker_agents=worker_agents_dict, 
+                                                                                                   prompt_data=prompt_data, 
+                                                                                                   current_level=current_cascade_level))
                 
                 # print(f"Question {idx}: {question_id} - {questions_mapping[question_id]}")
                 for agent_initial_answer in initial_answers.values():
                     print(f"\nAgent {agent_initial_answer.author_id}: \n\tResponse: {agent_initial_answer.content}")
 
                 # * Generate Critiques/Debate prompts
-                critiques: dict[str, AgentResponse] = asyncio.run(run_cascade_debate(worker_agents=worker_agents_dict, prev_answers=initial_answers, current_level=current_cascade_level))
+                critiques: dict[str, AgentResponse] = asyncio.run(run_cascade_debate(worker_agents=worker_agents_dict, 
+                                                                                     prev_answers=initial_answers, 
+                                                                                     current_level=current_cascade_level))
                 
                 for agent_critique in critiques.values():
                     print(f"\nAgent {agent_critique.author_id}: \n\tResponse: {agent_critique.content}")
@@ -959,22 +1203,32 @@ def main() -> None:
                     print(f"\nAgent {agent_final_answer.author_id}: \n\tResponse: {agent_final_answer.content}")
                 
                 # * STEP 5: Integrate Judge Agent to select the best final answer.
-                validator_prompt = ensemble_agents_answers(agents_answers=final_answers, 
-                                                            initial_question=question_prompt, 
-                                                            premise_clause=JUDGE_PROMPT_2, 
-                                                            current_cascade_level=current_cascade_level)
-                validator_answer = asyncio.run(run_validation(judge_agent=validator_agent, 
-                                                                question=question_prompt, 
-                                                                prompt=validator_prompt,
-                                                                answers=final_answers
-                                                                ))
+                validator_prompt: str = ensemble_agents_answers(agents_answers=final_answers, 
+                                                                initial_question=question_prompt, 
+                                                                premise_clause=JUDGE_PROMPT_3)
+                validator_answer: dict[str, Any] = asyncio.run(run_validation(judge_agent=validator_agent,
+                                                                              question=question_prompt,
+                                                                              prompt=validator_prompt,
+                                                                              answers=final_answers))
                 
                 if validator_answer['best_answer']['best_confidence_score'] >= ACCEPTABLE_SCORE:
                     # ANSWER GOOD
+                    # TODO: Check how to update this method.
                     synthetized_final_answer: str = asyncio.run(synthetize_final_answer(validator_agent=validator_agent, final_answers=final_answers))
                     
                     print(f"Synthetized final answer:\n{synthetized_final_answer}")
                     print(f"FINAL ANSWER (DIRECT FROM WORKER):\n{final_answers[validator_answer['best_answer']['best_worker_model_id']].content}")
+                    
+                    log_final_answer_trace(
+                        question_id=question_id,
+                        question_prompt=original_question,
+                        is_definitive=True,
+                        # TODO: Maybe try with best all previous answers. Engage memory of validator?
+                        synthetized_answer=final_answers[validator_answer['best_answer']['best_worker_model_id']].content,
+                        best_worker_model_id=cascade_lvl_models[validator_answer['best_answer']['best_worker_model_id']]['model_name'],
+                        cascade_level=current_cascade_level,
+                        best_confidence_score=validator_answer['best_answer']['best_confidence_score']
+                    )
                     
                     logger.success(f"Best answer ({validator_answer['best_answer']['best_confidence_score']}) was generated by: {validator_answer['best_answer']['best_worker_model_id']} at cascade level: {current_cascade_level}, with answer: {__format_response(long_string_log=synthetized_final_answer)}.")
                     
@@ -984,11 +1238,21 @@ def main() -> None:
                 logger.info(f"Current cascade level: {current_cascade_level} did not result in good answer.")
                 logger.info(f"Best answer ({validator_answer['best_answer']['best_confidence_score']}) was generated by: {validator_answer['best_answer']['best_worker_model_id']}, with answer: {__format_response(long_string_log=final_answers[validator_answer['best_answer']['best_worker_model_id']].content)}")
                 
-                # TODO: next should be the prompt with ensembled results.
+                log_final_answer_trace(
+                    question_id=question_id,
+                    question_prompt=original_question,
+                    is_definitive=False,
+                    # TODO: Maybe try with best all previous answers. Engage memory of validator?
+                    synthetized_answer=final_answers[validator_answer['best_answer']['best_worker_model_id']].content,
+                    best_worker_model_id=cascade_lvl_models[validator_answer['best_answer']['best_worker_model_id']]['model_name'],
+                    cascade_level=current_cascade_level,
+                    best_confidence_score=validator_answer['best_answer']['best_confidence_score']
+                )
+                
                 next_cascade_prompt: str = ensemble_agents_answers(agents_answers=final_answers, 
-                                                           initial_question=question_prompt, 
-                                                           premise_clause=NEXT_CASCADE_LEVEL_PROMPT, 
-                                                           current_cascade_level=current_cascade_level)
+                                                                   initial_question=question_prompt, 
+                                                                   premise_clause=NEXT_CASCADE_LEVEL_PROMPT_2, 
+                                                                   agents_answers_review=validator_answer)
                 
                 prompt_data = (question_id, next_cascade_prompt)
             # LAST LEVEL OF CASCADE WITH NO SUCCESS
@@ -999,7 +1263,18 @@ def main() -> None:
                 
                 synthetized_final_answer: str = asyncio.run(synthetize_final_answer(validator_agent=validator_agent, final_answers=final_answers))
                 
-                print(synthetized_final_answer)
+                log_final_answer_trace(
+                    question_id=question_id,
+                    question_prompt=original_question,
+                    is_definitive=True,
+                    # TODO: Maybe try with best all previous answers. Engage memory of validator?
+                    synthetized_answer=final_answers[validator_answer['best_answer']['best_worker_model_id']].content,
+                    best_worker_model_id=cascade_lvl_models[validator_answer['best_answer']['best_worker_model_id']]['model_name'],
+                    cascade_level=current_cascade_level,
+                    best_confidence_score=validator_answer['best_answer']['best_confidence_score']
+                )
+                
+                print(f"Synthetized final answer:\n{synthetized_final_answer}")
                 print(f"FINAL ANSWER (DIRECT FROM WORKER):\n{final_answers[validator_answer['best_answer']['best_worker_model_id']].content}")
             
                 logger.success(f"Cascade level {current_cascade_level} completed.")

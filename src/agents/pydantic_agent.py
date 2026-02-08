@@ -95,6 +95,7 @@ class WorkingAgent(PydanticAIAgent):
         if hasattr(answer, 'content'):
             answer = answer.content
         
+        # TODO: Hardcoded confidence and arguments should be replaced with actual values.
         response = AgentResponse(
             author_id=self.role_name,
             content=answer,
@@ -141,6 +142,7 @@ class WorkingAgent(PydanticAIAgent):
         else:
             critique_content = str(result)
         
+        # TODO: Hardcoded confidence should be replaced with actual confidence.
         return AgentResponse(
             author_id=self.role_name,
             content=critique_content,
@@ -216,6 +218,7 @@ class ValidatorAgent:
 
     async def evaluate_single(self, question: str, answer: str) -> Dict[str, Any]:
         """Evaluate a single response."""
+        # TODO: ADD PROMPT CUSTOM
         prompt = (
             f"[User Prompt]\n{question}\n\n"
             f"[Model Response]\n{answer}"
@@ -229,19 +232,20 @@ class ValidatorAgent:
         print(f"📊 Verdict: {parsed.get('verdict', 'Unknown')}")
         print(f"📈 Score: {parsed.get('score', 'N/A')}")
 
-        self.memory.append({"type": "single", "question": question, **parsed})
+        self.memory.append({"type": "single_evaluation", "question": question, **parsed})
         return parsed
 
     # TODO: TEMPORARY NEW METHOD, UNDER DISCUSSION
     async def evaluate_multiple(self, prompt: Prompt, question: str, answers: dict[str, AgentResponse]) -> dict[str, Any]:
-        print(f"Comparing {len(answers.keys())} responses")
+        """Evaluate multiple answers from worker agents."""
+        print(f"Evaluating {len(answers.keys())} responses")
         
         result = await self.judge_agent.run(prompt)
         
         raw = result.data if hasattr(result, 'data') else str(result.output)
         parsed = self._parse_json(raw)
         
-        self.memory.append({"type": "multiple", "question": question, **parsed})
+        self.memory.append({"type": "multiple_evaluation", "question": question, **parsed})
         return parsed
     
     async def evaluate_comparison(self, question: str, answer_a: str, answer_b: str) -> Dict[str, Any]:
@@ -262,7 +266,7 @@ class ValidatorAgent:
         print(f"📊 Verdict: {parsed.get('verdict', 'Unknown')}")
         print(f"🏆 Winner: {parsed.get('winner', 'Unknown')}")
 
-        self.memory.append({"type": "comparison", "question": question, **parsed})
+        self.memory.append({"type": "comparison_evaluation", "question": question, **parsed})
         return parsed
 
     async def validate(self, responses: List[AgentResponse]) -> ValidationResult:
