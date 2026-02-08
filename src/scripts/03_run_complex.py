@@ -30,16 +30,9 @@ USER_PROMPT: str = {
 }
 IS_COMPLEX: bool = True
 
-# EXPERIMENT DATASET
-DATASET_EXPERIMENT_NAME: str = "DATASET_Arena_Hard_V2"
-MLFLOW_DATASET_NAME: str = "arena_hard_v2_0"
-
-# DATASET_EXPERIMENT_NAME: str = "DATASET_Arena_Hard"
-# MLFLOW_DATASET_NAME: str = "arena_hard_auto"
-
-# CONFIGURATION
-
 # PROMPTS
+# * WORKERS PROMPTS
+
 # LOW STRICT
 WORKING_AGENT_SYSTEM_PROMPT_1: str = "You are a helpful AI assistant. Provide detailed, accurate answers."
 
@@ -123,10 +116,10 @@ Your response should be comprehensive enough to be helpful while remaining clear
 Be helpful. Be clear. Stay on point.
 """
 
-# NEXT LEVEL CASCADE
+# * NEXT LEVEL CASCADE PROMPT
 NEXT_CASCADE_LEVEL_PROMPT: str = "Previous cascade level worker agents did not succeed to answer properly user question/prompt. Analyze the question and their answers and generate better results:"
 
-# JUDGE
+# * JUDGE PROMPTS
 JUDGE_PROMPT_1: str = """
 Worker agents provided the following answers to the initial question. 
 Analyze the question and their answers and start a voting process for the best answer.
@@ -222,22 +215,34 @@ Provide the response in the following format:
 ```
 """
 
+# CONFIGURATION
+# NUMBER OF QUESTIONS TO BE EVALUATED/ASKED TO THE CASCADE.
+NUM_MAX_QUESTIONS: int = 1  # ! CONFIGURABLE
+
 # CASCADE MODELS CONFIG
 CASCADE_MODELS_CONFIG: dict[str, str] = make_config()
 COMPLEX_RUN_CONFIG_KEY: str = "cascade_complex_run"
 
 # JUDGE MODELS CONFIG
 JUDGE_MODELS_CONFIG_KEY: str = "judge_models"
-JUDGE_MODEL_KEY: str = "judge_model_1"
-ACCEPTABLE_SCORE: float = 0.9
+JUDGE_MODEL_KEY: str = "judge_model_2"  # ! CONFIGURABLE
+ACCEPTABLE_SCORE: float = 0.9  # ! CONFIGURABLE
 
 # CASCADE LEVEL
-MAX_CASCADE_LEVEL: int = 5
+MAX_CASCADE_LEVEL: int = 5  # ! CONFIGURABLE (1 <= value <= 5)
 
 # MLFLOW
-# MLFLOW_TRACKING_URI: str = "http://127.0.0.1:5000"
 MLFLOW_TRACKING_URI: str = os.getenv(key="MLFLOW_TRACKING_URI", default="http://127.0.0.1:5000")
-EXPERIMENT_NAME: str = "complex_workflow_run"
+EXPERIMENT_NAME: str = "complex_workflow_run"  # ! CONFIGURABLE
+
+# EXPERIMENT DATASET
+# * Arena Hard Auto v1.0
+# MLFLOW_DATASET_EXPERIMENT_NAME: str = "DATASET_Arena_Hard"
+# MLFLOW_DATASET_NAME: str = "arena_hard_auto"
+
+# * Arena Hard Auto v2.0
+MLFLOW_DATASET_EXPERIMENT_NAME: str = "DATASET_Arena_Hard_V2"
+MLFLOW_DATASET_NAME: str = "arena_hard_v2_0"
 
 def perform_initial_mlflow_setup(mlflow_uri: str) -> None:
     """Function to set up basic MLFlow workflows.
@@ -261,12 +266,12 @@ def perform_initial_mlflow_setup(mlflow_uri: str) -> None:
     
     logger.success(f"MLFlow Tracking URI set to: {set_up_tracking_uri}.")
     
-def get_experiment_dataset(experiment_name: str = DATASET_EXPERIMENT_NAME, dataset_name: str = MLFLOW_DATASET_NAME) -> Optional[dict[str, Any]]:
+def get_experiment_dataset(experiment_name: str = MLFLOW_DATASET_EXPERIMENT_NAME, dataset_name: str = MLFLOW_DATASET_NAME) -> Optional[dict[str, Any]]:
     """Retrieves experiment dataset by its MLFlow experiment name.
 
     Args:
-        experiment_name (str, optional): Name of the MLFlow Experiment containing a dataset. Defaults to DATASET_EXPERIMENT_NAME = DATASET_Arena_Hard.
-        dataset_name (str, optional): Name of the Dataset in MLFlow Experiment. Defaults to MLFLOW_DATASET_NAME = arena-hard-auto.
+        experiment_name (str, optional): Name of the MLFlow Experiment containing a dataset. Defaults to MLFLOW_DATASET_EXPERIMENT_NAME = DATASET_Arena_Hard_V2.
+        dataset_name (str, optional): Name of the Dataset in MLFlow Experiment. Defaults to MLFLOW_DATASET_NAME = arena_hard_v2_0.
 
     Returns:
         Optional[dict[str, Any]]: Dict representation of the dataset from MLFlow Experiment. If no dataset is found, returns None.
@@ -1050,7 +1055,7 @@ def main() -> None:
     perform_initial_mlflow_setup(mlflow_uri=MLFLOW_TRACKING_URI)
     
     # * Retrieving Dataset from MLFlow
-    dataset_records: dict[str, Any] = get_experiment_dataset(experiment_name=DATASET_EXPERIMENT_NAME)['records']
+    dataset_records: dict[str, Any] = get_experiment_dataset(experiment_name=MLFLOW_DATASET_EXPERIMENT_NAME, dataset_name=MLFLOW_DATASET_NAME)['records']
     if not dataset_records:
         logger.error("Dataset was not found.")
         return
@@ -1064,22 +1069,22 @@ def main() -> None:
     #     logger.error("Question records not found.")
     #     return
     
-    # * SCENARIO 2: SUBSET OF QUESTIONS (10) FROM MLFLOW DATASET
-    # question_records_idx: int = range(0, 11)
-    # question_records: list = get_question_records_from_dataset(dataset=dataset_records, record_idx=question_records_idx)
-    # if not question_records:
-    #     logger.error("Question records not found.")
-    #     return
+    # * SCENARIO 2: SUBSET OF QUESTIONS (NUM_MAX_QUESTIONS) FROM MLFLOW DATASET
+    question_records_idx: int = range(0, NUM_MAX_QUESTIONS)
+    question_records: list = get_question_records_from_dataset(dataset=dataset_records, record_idx=question_records_idx)
+    if not question_records:
+        logger.error("Question records not found.")
+        return
     
     # * SCENARIO 3: CUSTOM QUESTION
     # question_records: list = [USER_PROMPT]
     
     # * SCENARIO 4: SINGLE QUESTION FROM MLFLOW DATASET
-    question_records_idx: int = 1
-    question_records: list = get_question_records_from_dataset(dataset=dataset_records, record_idx=question_records_idx)
-    if not question_records:
-        logger.error("Question record not found.")
-        return
+    # question_records_idx: int = 1
+    # question_records: list = get_question_records_from_dataset(dataset=dataset_records, record_idx=question_records_idx)
+    # if not question_records:
+    #     logger.error("Question record not found.")
+    #     return
     
     questions_mapping: dict[str, dict[str, str]] = question_records_to_question_str(question_records=question_records)
     
