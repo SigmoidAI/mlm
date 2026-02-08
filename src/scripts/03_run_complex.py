@@ -124,46 +124,7 @@ Be helpful. Be clear. Stay on point.
 """
 
 # NEXT LEVEL CASCADE
-NEXT_CASCADE_LEVEL_PROMPT_1: str = "Previous cascade level worker agents did not succeed to answer properly user question/prompt. Analyze the question and their answers and generate better results:"
-
-NEXT_CASCADE_LEVEL_PROMPT_2: str = """
-Previous cascade level worker agents did not succeed to answer properly user question/prompt. Analyze the question and their answers and generate better results.
-
-## Core Principles:
-
-1. **Relevant Focus**: Prioritize answering the specific question asked. Include helpful context or examples when they enhance understanding, but avoid unrelated tangents.
-
-2. **Balanced Depth**: Provide enough detail to be truly helpful without over-explaining. Aim for clarity and completeness within the question's scope.
-
-3. **Question-Centered**: Ensure your answer serves the user's actual need. Add clarifying information when it directly supports the answer.
-
-4. **Accuracy First**: Provide verifiable, correct information. Acknowledge limitations when appropriate.
-
-5. **Clear Structure**: Organize information logically. Use examples and explanations that illuminate the answer.
-
-## Response Guidelines:
-
-- Lead with the direct answer, then provide supporting details
-- Include brief context when it aids understanding
-- Use relevant examples to clarify concepts
-- Keep explanations proportional to the question's complexity
-- Avoid wandering into distantly related topics
-
-## Refinement Integration:
-
-When refining your previous response:
-- Seamlessly incorporate improvements into your own answer
-- Present the refined version as a natural, cohesive response
-- Do not reference previous versions, suggestions, or the refinement process
-- Integrate additions and modifications as if this is your first, complete answer
-- Maintain consistency in tone and style throughout
-
-## Output Standard:
-
-Your response should be comprehensive enough to be helpful while remaining clearly connected to the user's specific question. Balance thoroughness with relevance.
-
-Be helpful. Be clear. Stay on point.
-"""
+NEXT_CASCADE_LEVEL_PROMPT: str = "Previous cascade level worker agents did not succeed to answer properly user question/prompt. Analyze the question and their answers and generate better results:"
 
 # JUDGE
 JUDGE_PROMPT_1: str = """
@@ -1010,6 +971,7 @@ async def synthetize_final_answer(validator_agent: ValidatorAgent, final_answers
 def log_final_answer_trace(question_id: str, 
                            question_prompt: str, 
                            is_definitive: bool, 
+                           acceptable_score: float, 
                            synthetized_answer: str, 
                            best_worker_model_id: str, 
                            cascade_level: int, 
@@ -1020,6 +982,7 @@ def log_final_answer_trace(question_id: str,
         question_id (str): ID of the question.
         question_prompt (str): Original question text.
         is_definitive (bool): Flag to show if the log is for the final answer
+        acceptable_score (float): Acceptable score threshold.
         synthetized_answer (str): Final synthesized answer.
         best_worker_model_id (str): ID of the best performing worker model.
         cascade_level (int): Cascade level where answer was found.
@@ -1036,6 +999,7 @@ def log_final_answer_trace(question_id: str,
         "output": synthetized_answer,
         "is_definitive": is_definitive,
         "question_id": question_id,
+        "acceptable_score": acceptable_score,
         "final_best_model" if is_definitive else "best_model": best_worker_model_id,
         "final_cascade_level" if is_definitive else "cascade_level": cascade_level,
         "final_best_confidence_score" if is_definitive else "best_confidence_score": best_confidence_score
@@ -1047,7 +1011,8 @@ def log_final_answer_trace(question_id: str,
             inputs={
                 "question_id": question_id,
                 "question": question_prompt,
-                "is_definitive": is_definitive
+                "is_definitive": is_definitive,
+                "acceptable_score": acceptable_score
             }
         )
         
@@ -1223,6 +1188,7 @@ def main() -> None:
                         question_id=question_id,
                         question_prompt=original_question,
                         is_definitive=True,
+                        acceptable_score=ACCEPTABLE_SCORE,
                         # TODO: Maybe try with best all previous answers. Engage memory of validator?
                         synthetized_answer=final_answers[validator_answer['best_answer']['best_worker_model_id']].content,
                         best_worker_model_id=cascade_lvl_models[validator_answer['best_answer']['best_worker_model_id']]['model_name'],
@@ -1242,6 +1208,7 @@ def main() -> None:
                     question_id=question_id,
                     question_prompt=original_question,
                     is_definitive=False,
+                    acceptable_score=ACCEPTABLE_SCORE,
                     # TODO: Maybe try with best all previous answers. Engage memory of validator?
                     synthetized_answer=final_answers[validator_answer['best_answer']['best_worker_model_id']].content,
                     best_worker_model_id=cascade_lvl_models[validator_answer['best_answer']['best_worker_model_id']]['model_name'],
@@ -1251,7 +1218,7 @@ def main() -> None:
                 
                 next_cascade_prompt: str = ensemble_agents_answers(agents_answers=final_answers, 
                                                                    initial_question=question_prompt, 
-                                                                   premise_clause=NEXT_CASCADE_LEVEL_PROMPT_2, 
+                                                                   premise_clause=NEXT_CASCADE_LEVEL_PROMPT, 
                                                                    agents_answers_review=validator_answer)
                 
                 prompt_data = (question_id, next_cascade_prompt)
@@ -1267,6 +1234,7 @@ def main() -> None:
                     question_id=question_id,
                     question_prompt=original_question,
                     is_definitive=True,
+                    acceptable_score=ACCEPTABLE_SCORE,
                     # TODO: Maybe try with best all previous answers. Engage memory of validator?
                     synthetized_answer=final_answers[validator_answer['best_answer']['best_worker_model_id']].content,
                     best_worker_model_id=cascade_lvl_models[validator_answer['best_answer']['best_worker_model_id']]['model_name'],
