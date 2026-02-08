@@ -26,7 +26,7 @@ def _load_env() -> None:
         return
     
     logger.success(f".env file found at - {dotenv_path}")
-    load_dotenv(dotenv_path=dotenv_path)
+    load_dotenv(dotenv_path=dotenv_path, override=True)
 
 def make_config(config_file_path: str = None) -> dict:
     """Generates the config dict object from .yaml file.

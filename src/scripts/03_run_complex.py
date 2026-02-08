@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import json
+import os
 import uuid
 from typing import Any, Coroutine, Optional, Union
 
@@ -29,8 +30,8 @@ USER_PROMPT: str = {
 IS_COMPLEX: bool = True
 
 # EXPERIMENT DATASET
-DATASET_EXPERIMENT_NAME: str = "DATASET_Arena_Hard"
-MLFLOW_DATASET_NAME: str = "arena_hard_auto"
+DATASET_EXPERIMENT_NAME: str = "DATASET_Arena_Hard_V2"
+MLFLOW_DATASET_NAME: str = "arena_hard_v2_0"
 
 # CONFIGURATION
 
@@ -88,10 +89,10 @@ JUDGE_MODEL_KEY: str = "judge_model_1"
 ACCEPTABLE_SCORE: float = 0.9
 
 # CASCADE LEVEL
-CASCADE_LEVEL: int = 5
+MAX_CASCADE_LEVEL: int = 5
 
 # MLFLOW
-MLFLOW_TRACKING_URI: str = "http://127.0.0.1:5000" # os.getenv(key="MLFLOW_TRACKING_URI")
+MLFLOW_TRACKING_URI: str = os.getenv(key="MLFLOW_TRACKING_URI", default="http://127.0.0.1:5000")
 EXPERIMENT_NAME: str = "complex_workflow_run"
 
 def perform_initial_mlflow_setup(mlflow_uri: str) -> None:
@@ -915,7 +916,7 @@ def main() -> None:
             })
             prompt_data: tuple[str, str] = (question_id, question_prompt)
             
-            for current_cascade_level in range(1, CASCADE_LEVEL + 1):
+            for current_cascade_level in range(1, MAX_CASCADE_LEVEL + 1):
                 logger.info(f"Entering cascade level {current_cascade_level}.")
                 
                 # * STEP 3: Configuring Agents
