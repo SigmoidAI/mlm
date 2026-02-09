@@ -38,6 +38,8 @@ import yaml
 import mlflow
 import mlflow.pydantic_ai
 from mlflow.genai.datasets import EvaluationDataset, search_datasets
+import json
+results_jsonl_path = os.path.join(os.path.dirname(__file__), "..", "resources", "results.jsonl")
 
 # Local Imports
 from src.agents.pydantic_agent import WorkingAgent, ValidatorAgent
@@ -497,13 +499,14 @@ def run_evaluation() -> None:
     total_records = len(RECORDS["records"])
     num_questions = NUM_QUESTIONS if NUM_QUESTIONS > 0 else total_records
     
+
     for idx, record in enumerate(RECORDS["records"][:num_questions]):
         question = record["inputs"]["question"]
         question_id = record["inputs"]["question_id"]
         category = record["inputs"].get("category", "unknown")
-        
+
         print(f"[{idx+1}/{num_questions}] {question_id} ({category})")
-        
+
         with mlflow.start_run(run_name=question_id):
             mlflow.log_params({
                 "question_id": question_id,
@@ -514,25 +517,39 @@ def run_evaluation() -> None:
                 "num_models": num_models,
                 "version": version
             })
-            
+
             try:
                 result = run_cascade(question, question_id, models)
-                
+
                 mlflow.log_metrics({
                     "iterations": result["iterations"],
                     "success": 1 if result["success"] else 0,
                     "answer_length": len(result["answer"])
                 })
                 mlflow.log_dict(result["history"], "history.json")
-                
+
+                # JSONL logging
+                jsonl_entry = {
+                    "question_id": question_id,
+                    "category": category,
+                    "question": question,
+                    "answer": result["answer"],
+                    "iterations": result["iterations"],
+                    "model": result["model"],
+                    "success": result["success"],
+                    "history": result["history"]
+                }
+                with open(results_jsonl_path, "a", encoding="utf-8") as f_jsonl:
+                    f_jsonl.write(json.dumps(jsonl_entry, ensure_ascii=False) + "\n")
+
                 if result["success"]:
                     success_count += 1
                     print(f"   Final: {result['answer'][:80]}...\n")
                 else:
                     print(f"   Exhausted all models\n")
-                
+
                 total_iterations += result["iterations"]
-                
+
             except Exception as e:
                 print(f"   Error: {e}\n")
                 mlflow.log_metrics({"success": 0})
