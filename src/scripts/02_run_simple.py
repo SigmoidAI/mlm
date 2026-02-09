@@ -62,6 +62,7 @@ MLFLOW_URI: str = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000/")
 # Dataset Configuration
 DATASET_EXPERIMENT_NAME: str = "DATASET_Arena_Hard_V2"
 MLFLOW_DATASET_NAME: str = "arena_hard_v2_0"
+NUM_QUESTIONS: int = int(os.getenv("NUM_QUESTIONS", "0"))  # 0 = use all questions
 
 # Model Configuration
 MODEL_CONFIG_KEY: str = "simple_flow"
@@ -441,8 +442,7 @@ def run_cascade(
 def run_evaluation() -> None:
     """Run simple flow evaluation on dataset."""
     models = load_models(MODEL_CONFIG_KEY)
-    # num_models = len(models)
-    num_models = 2
+    num_models = len(models)
     
     exp_name = f"SimpleFlow_{num_models}Models"
     exp_id, full_exp_name, version = create_versioned_experiment(exp_name)
@@ -459,7 +459,8 @@ def run_evaluation() -> None:
     
     success_count = 0
     total_iterations = 0
-    num_questions = len(RECORDS["records"])
+    total_records = len(RECORDS["records"])
+    num_questions = NUM_QUESTIONS if NUM_QUESTIONS > 0 else total_records
     
     for idx, record in enumerate(RECORDS["records"][:num_questions]):
         question = record["inputs"]["question"]
