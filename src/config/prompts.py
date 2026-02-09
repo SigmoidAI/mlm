@@ -37,7 +37,7 @@ If analyzing a single response:
 
 If analyzing multiple answers:
 ```json
-{
+"evaluation": {
   "type": "multiple_evaluation"
   "question": <question>,
   "best_answer": {
