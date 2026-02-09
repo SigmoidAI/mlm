@@ -229,7 +229,11 @@ class ValidatorAgent:
         result = await self.judge_agent.run(prompt)
         raw = result.data if hasattr(result, 'data') else str(result.output)
         parsed = self._parse_json(raw)
-
+        
+        if not isinstance(parsed, dict):
+            print(f"Warning: parsed result is not a dict, got {type(parsed)}")
+            parsed = {"reasoning": str(parsed), "verdict": "Unknown", "score": 0.0}
+    
         print(f"📊 Verdict: {parsed.get('verdict', 'Unknown')}")
         print(f"📈 Score: {parsed.get('score', 'N/A')}")
 
@@ -245,6 +249,10 @@ class ValidatorAgent:
         
         raw = result.data if hasattr(result, 'data') else str(result.output)
         parsed = self._parse_json(raw)
+        
+        if not isinstance(parsed, dict):
+            print(f"Warning: parsed result is not a dict, got {type(parsed)}")
+            parsed = {"reasoning": str(parsed), "verdict": "Unknown", "score": 0.0}
         
         self.memory.append({"type": "multiple_evaluation", "question": question, **parsed})
         return parsed
