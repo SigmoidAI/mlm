@@ -5,6 +5,7 @@ import os
 import uuid
 from typing import Any, Coroutine, Optional, Union
 
+import json_repair
 from loguru import logger
 from mlflow.entities import SpanType
 from mlflow.genai.datasets import EvaluationDataset, search_datasets  # get_dataset
@@ -121,18 +122,7 @@ NEXT_CASCADE_LEVEL_PROMPT: str = "Previous cascade level worker agents did not s
 
 # * JUDGE PROMPTS
 JUDGE_PROMPT_1: str = """
-Worker agents provided the following answers to the initial question. 
-Analyze the question and their answers and start a voting process for the best answer.
-Be impartial and serve as an objective critic.
-Provide the response strictly in the following format:
-```json
-"evaluation": {
-    "question": <question>,
-    "best_answer": <worker_model_id>,
-    "confidence_score": <answer_confidence_score_float_4_decimals>,
-    "reason": <reason>,
-}
-```
+Worker agents provided the following answers to the initial question.
 """
 
 JUDGE_PROMPT_2: str = """
@@ -225,8 +215,8 @@ COMPLEX_RUN_CONFIG_KEY: str = "cascade_complex_run"
 
 # JUDGE MODELS CONFIG
 JUDGE_MODELS_CONFIG_KEY: str = "judge_models"
-JUDGE_MODEL_KEY: str = "judge_model_2"  # ! CONFIGURABLE
-ACCEPTABLE_SCORE: float = 0.9  # ! CONFIGURABLE
+JUDGE_MODEL_KEY: str = "judge_model_1"  # ! CONFIGURABLE
+ACCEPTABLE_SCORE: float = 0.95  # ! CONFIGURABLE
 
 # CASCADE LEVEL
 MAX_CASCADE_LEVEL: int = 5  # ! CONFIGURABLE (1 <= value <= 5)
@@ -637,25 +627,25 @@ async def run_cascade_debate(worker_agents: dict[str, WorkingAgent], prev_answer
     tasks = []
     for agent_id, worker_agent in worker_agents.items():
         logger.info(f"Attempting to generate critique response by agent: {agent_id} - {worker_agent.agent}")
-        print(f"{prev_answers[agent_id].author_id} - {agent_id}")
+        # print(f"{prev_answers[agent_id].author_id} - {agent_id}")
         individual_peer_responses: list[Prompt] = [
             Prompt(content=peer_response.content, model_tier="complex")
             for peer_id, peer_response in prev_answers.items()
             if peer_id != agent_id
         ]
         
-        print(
-            json.dumps(
-                [
-                    {
-                        "content": p.content,
-                        "model_tier": p.model_tier,
-                    }
-                    for p in individual_peer_responses
-                ],
-                indent=4
-            )
-        )
+        # print(
+        #     json.dumps(
+        #         [
+        #             {
+        #                 "content": p.content,
+        #                 "model_tier": p.model_tier,
+        #             }
+        #             for p in individual_peer_responses
+        #         ],
+        #         indent=4
+        #     )
+        # )
                 
         if not individual_peer_responses:
             logger.warning(f"Agent {agent_id} has no peer responses to critique")
@@ -693,7 +683,7 @@ async def run_cascade_debate(worker_agents: dict[str, WorkingAgent], prev_answer
     return valid_critiques
 
 
-async def run_validation(judge_agent: ValidatorAgent, question: str, prompt: Prompt, answers: dict[str, AgentResponse]) -> dict[str, Any]:
+async def run_validation(judge_agent: ValidatorAgent, question: str, prompt: Prompt, answers: dict[str, AgentResponse]) -> Optional[dict[str, Any]]:
     logger.info(f"Engaging judge agent in validation of: {len(answers.keys())} answers.")
     judge_response = await judge_agent.evaluate_multiple(prompt=prompt, question=question, answers=answers)
     
@@ -701,6 +691,18 @@ async def run_validation(judge_agent: ValidatorAgent, question: str, prompt: Pro
         logger.error(f"Judge agent did not succeed to generate appropriate response: {judge_response}")
         print(judge_response)
         return None
+    
+    if "reasoning" in judge_response.keys():
+        logger.error(f"Judge agent generated malformed response: {judge_response}")
+        print(judge_response)
+        return json_repair.loads(judge_response['reasoning'])
+    
+    if "type" in judge_response.keys():
+        logger.warning(f"Judge agent did not convey to format: {__format_response(long_string_log=json.dumps(judge_response))}")
+        print(judge_response)
+        return {
+            "evaluation": judge_response
+        }
     
     logger.success("Judge agent succeeded to generate apropriate response.")
     print(judge_response)
@@ -1175,11 +1177,34 @@ def main() -> None:
                 # * STEP 5: Integrate Judge Agent to select the best final answer.
                 validator_prompt: str = ensemble_agents_answers(agents_answers=final_answers, 
                                                                 initial_question=question_prompt, 
-                                                                premise_clause=JUDGE_PROMPT_3)
+                                                                premise_clause=JUDGE_PROMPT_1)
                 validator_answer: dict[str, Any] = asyncio.run(run_validation(judge_agent=validator_agent,
                                                                               question=question_prompt,
                                                                               prompt=validator_prompt,
                                                                               answers=final_answers))
+                if not validator_answer:
+                    logger.error('ValidatorAgent did not succeed. Falling back to default...')
+                    # first_answer = list(final_answers.values())[0] if final_answers else None
+    
+
+                    # individual_reviews = {}
+                    # for idx, _ in enumerate(final_answers.keys(), start=1):
+                    #     individual_reviews[f"worker_model_{idx}"] = {
+                    #         "confidence_score": 0.0,
+                    #         "reason": "N/A",
+                    #     }
+                    
+                    # validator_answer = {
+                    #     "evaluation": {
+                    #         "question": question_prompt,
+                    #         "best_answer": {
+                    #             "best_worker_model_id": first_answer.author_id if first_answer else "unknown",
+                    #             "best_confidence_score": 0.0,
+                    #             "best_reason": "N/A"    
+                    #         },
+                    #         "individual_reviews": individual_reviews
+                    #     }
+                    # }
                 
                 if validator_answer['evaluation']['best_answer']['best_confidence_score'] >= ACCEPTABLE_SCORE:
                     # ANSWER GOOD

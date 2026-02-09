@@ -178,8 +178,8 @@ cascade_complex_run:
         max_tokens: 8192
         temperature: 0.5
     worker_model_4:
-      model_name: allenai/olmo-2-0325-32b-instruct  # 32 Bil. | 0.05 (input) | 0.20 (output)
-      short_model_name: OLMO 2 0325 32B Instruc
+      model_name: baidu/ernie-4.5-21b-a3b  # 32 Bil. | 0.05 (input) | 0.20 (output)
+      short_model_name: Baidu Ernie 4.5 21B A3B
       endpoint:
         api_base_url: https://openrouter.ai/api/v1
         api_key: ${OPENROUTER_API_KEY}

@@ -22,7 +22,7 @@ Assess the responses based on:
    - If COMPARING responses: Determine which is better (A, B, or Tie).
 
 ### OUTPUT FORMAT
-You must output a single JSON block strictly following this schema. Wrap raw JSON Output in markdown code blocks around it.
+You must output a single JSON block strictly following this schema. Do not output markdown code blocks around it, just the raw JSON. Be careful when forming the JSON. It should be valid from the point of view of the structure.
 
 1. If analyzing a single response:
 ```json

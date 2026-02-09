@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+import json_repair
 from openai import AsyncOpenAI
 from pydantic_ai import Agent
 from pydantic_ai.models.openai import OpenAIChatModel
@@ -201,7 +202,7 @@ class ValidatorAgent:
         match = re.search(r'```(?:json)?\s*(.*?)\s*```', raw_text, re.DOTALL)
         if match:
             try:
-                return json.loads(match.group(1))
+                return json_repair.loads(match.group(1))
             except json.JSONDecodeError:
                 pass
 
@@ -210,7 +211,7 @@ class ValidatorAgent:
         end = raw_text.rfind('}')
         if start != -1 and end != -1:
             try:
-                return json.loads(raw_text[start:end + 1])
+                return json_repair.loads(raw_text[start:end + 1])
             except json.JSONDecodeError:
                 pass
 
