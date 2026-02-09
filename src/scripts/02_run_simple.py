@@ -74,7 +74,7 @@ ACCEPTABLE_SCORE: float = 0.9
 # Prompt Templates
 SYSTEM_PROMPT: str = "You are a helpful AI assistant. Provide detailed, accurate answers."
 
-REFINEMENT_PROMPT_TEMPLATE: str = """Previous answer was not satisfactory.
+REFINEMENT_PROMPT_TEMPLATE: str = """The previous answer did not fully meet the requirements.
 
 QUESTION:
 {question}
@@ -82,9 +82,10 @@ QUESTION:
 PREVIOUS ANSWER (Attempt {attempt}):
 {prev_answer}
 
-ISSUE: {issue}
+FEEDBACK ON PREVIOUS ANSWER:
+{issue}
 
-Please provide a better, more complete answer."""
+Please revise your answer to address the feedback above. Ensure your response is thorough, accurate, and covers all aspects of the question. Be clear, detailed, and avoid repeating previous mistakes."""
 
 
 # MLFLOW INITIALIZATION
@@ -387,52 +388,85 @@ def run_cascade(
     max_iter = len(model_names)
     prompt = question
     history = []
-    last_answer = ""
-    
+    answers_with_scores = []
+
     judge_agent = create_judge_agent()
-    
+
+
     for i, model_key in enumerate(model_names):
         config = models[model_key]
         print(f"   [{i+1}/{max_iter}] {model_key}")
-        
+
         agent = create_agent(config, model_key)
         result = agent.run_sync(prompt)
         answer = result.content
-        last_answer = answer
-        
-        is_good, reason = judge_answer(judge_agent, question, answer)
-        
+
+        # Get judge score and verdict
+        try:
+            judge_result = None
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                import nest_asyncio
+                nest_asyncio.apply()
+            judge_result = loop.run_until_complete(
+                judge_agent.evaluate_single(question=question, answer=answer)
+            )
+        except RuntimeError:
+            judge_result = asyncio.run(
+                judge_agent.evaluate_single(question=question, answer=answer)
+            )
+
+        score = judge_result.get("score", 0.0) if judge_result else 0.0
+        verdict = judge_result.get("verdict", "Unknown") if judge_result else "Unknown"
+        feedback = judge_result.get("feedback", "") if judge_result else ""
+        is_good = score >= ACCEPTABLE_SCORE and verdict == "Valid"
+        reason = f"Score: {score:.2f}, Verdict: {verdict}"
+        if feedback:
+            reason += f" - {feedback[:100]}"
+
         history.append({
             "iteration": i + 1,
             "model": model_key,
             "answer": answer,
             "passed": is_good,
-            "reason": reason
+            "reason": reason,
+            "score": score,
+            "verdict": verdict
         })
-        
+        answers_with_scores.append({
+            "answer": answer,
+            "model": model_key,
+            "score": score,
+            "iteration": i + 1,
+            "verdict": verdict
+        })
+
         mlflow.log_metrics({
             f"iter_{i+1}_length": len(answer),
             f"iter_{i+1}_passed": 1 if is_good else 0
         })
-        
+
         print(f"   -> {reason}")
-        
+
         if is_good:
-            return {
-                "answer": answer, 
-                "iterations": i + 1, 
-                "model": model_key, 
-                "success": True, 
-                "history": history
-            }
-        
-        prompt = build_refinement_prompt(question, answer, reason, i)
-    
+            break
+        else:
+            prompt = build_refinement_prompt(question, answer, reason, i)
+
+    # Find the best valid answer (verdict == 'Valid'), highest score
+    valid_answers = [a for a in answers_with_scores if a["verdict"] == "Valid"]
+    if valid_answers:
+        best = max(valid_answers, key=lambda x: x["score"])
+        success = best["score"] >= ACCEPTABLE_SCORE
+    else:
+        # If none are valid, fall back to highest score overall
+        best = max(answers_with_scores, key=lambda x: x["score"]) if answers_with_scores else {"answer": "", "model": model_names[-1], "score": 0.0, "iteration": max_iter, "verdict": "Unknown"}
+        success = False
     return {
-        "answer": last_answer, 
-        "iterations": max_iter, 
-        "model": model_names[-1], 
-        "success": False, 
+        "answer": best["answer"],
+        "iterations": best["iteration"],
+        "model": best["model"],
+        "success": success,
         "history": history
     }
 
