@@ -257,6 +257,8 @@ jmespath==1.1.0
     #   botocore
 joblib==1.5.3
     # via scikit-learn
+json-repair==0.57.1
+    # via sigmoid-mlm-project (pyproject.toml)
 jsonref==1.1.0
     # via fastmcp
 jsonschema==4.26.0
