@@ -216,7 +216,7 @@ USER_PROMPT: str = {
 }
 
 # NUMBER OF QUESTIONS TO BE EVALUATED/ASKED TO THE CASCADE.
-NUM_MAX_QUESTIONS: int = 2  # ! CONFIGURABLE
+NUM_MAX_QUESTIONS: int = 250  # ! CONFIGURABLE
 
 # CASCADE MODELS CONFIG
 CASCADE_MODELS_CONFIG: dict[str, str] = make_config()
@@ -236,12 +236,12 @@ EXPERIMENT_NAME: str = f"complex_workflow_run_max_{NUM_MAX_QUESTIONS}"  # ! CONF
 
 # EXPERIMENT DATASET # ! CONFIGURABLE
 # * Arena Hard Auto v1.0
-MLFLOW_DATASET_EXPERIMENT_NAME: str = "DATASET_Arena_Hard"
-MLFLOW_DATASET_NAME: str = "arena_hard_auto"
+# MLFLOW_DATASET_EXPERIMENT_NAME: str = "DATASET_Arena_Hard"
+# MLFLOW_DATASET_NAME: str = "arena_hard_auto"
 
 # * Arena Hard Auto v2.0
-# MLFLOW_DATASET_EXPERIMENT_NAME: str = "DATASET_Arena_Hard_V2"
-# MLFLOW_DATASET_NAME: str = "arena_hard_v2_0"
+MLFLOW_DATASET_EXPERIMENT_NAME: str = "DATASET_Arena_Hard_V2"
+MLFLOW_DATASET_NAME: str = "arena_hard_v2_0"
 
 # RESULTS
 # RESULTS_PATH: str = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "results")  # ! CONFIGURABLE
