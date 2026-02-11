@@ -1,17 +1,21 @@
+import json
 import os
+import warnings
+
+from tqdm import tqdm
+
 import mlflow
 from datasets import load_dataset
-from tqdm import tqdm
-import warnings
-import json
 
 warnings.filterwarnings("ignore")
 
 # Configuration
 MLFLOW_URI = "http://127.0.0.1:5000"
 HUGGINGFACE_DATASET = "lmarena-ai/arena-hard-auto"
-MLFLOW_DATASET_NAME = "arena_hard_auto"
-EXPERIMENT_NAME = "DATASET_Arena_Hard"
+# MLFLOW_DATASET_NAME = "arena_hard_auto"
+# EXPERIMENT_NAME = "DATASET_Arena_Hard"
+MLFLOW_DATASET_NAME = "arena_hard_v2_0"
+EXPERIMENT_NAME = "DATASET_Arena_Hard_V2"
 
 # Setup MLflow
 mlflow.set_tracking_uri(MLFLOW_URI)
@@ -37,7 +41,8 @@ def load_arena_hard_dataset(max_samples=None):
         # Load only the question file which has the prompts/questions
         dataset = load_dataset(
             HUGGINGFACE_DATASET,
-            data_files="data/arena-hard-v0.1/question.jsonl",
+            # data_files="data/arena-hard-v0.1/question.jsonl",
+            data_files="data/arena-hard-v2.0/question.jsonl",
             split="train"
         )
 
