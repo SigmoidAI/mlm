@@ -207,7 +207,7 @@ Provide the response strictly in the following format:
 
 # USER PROMPT (IF DESIRED) # ! CONFIGURABLE
 USER_PROMPT: str = {
-    "dataset_record_id": uuid.uuid4(),
+    "dataset_record_id": uuid.uuid4().hex,
     "inputs": {
         "question_id": "user_prompt_1",
         "question": "What is the capital of Great Britain?",
@@ -244,7 +244,6 @@ MLFLOW_DATASET_EXPERIMENT_NAME: str = "DATASET_Arena_Hard_V2"
 MLFLOW_DATASET_NAME: str = "arena_hard_v2_0"
 
 # RESULTS
-# RESULTS_PATH: str = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "results")  # ! CONFIGURABLE
 RESULTS_PATH: Path = Path(__file__).resolve().parent.parent / "results"  # ! CONFIGURABLE
 
 def init_dirs(paths: list[Union[Path, str]]) -> None:
@@ -304,12 +303,14 @@ def get_experiment_dataset(experiment_name: str = MLFLOW_DATASET_EXPERIMENT_NAME
     logger.info(f"Looking for MLFlow Experiment Dataset with Experiment ID: {experiment_id}.")
     
     # TODO: Check another way to retrieve dataset by experiment ID.
-    datasets_list: list[EvaluationDataset] = search_datasets(experiment_ids=experiment_id)
+    datasets_list: list[EvaluationDataset] = search_datasets(filter_string=f"name = '{dataset_name}'", experiment_ids=experiment_id)
+    
     if not datasets_list:
         logger.warning(f"No datasets found in MLFlow Experiment with Experiment ID: {experiment_id}")
         return None
     
     logger.success(f"Found: {len(datasets_list)} datasets in MLFlow Experiment with Experiment ID: {experiment_id}")
+    logger.success(f"Datasets: {datasets_list}")
     for dataset in datasets_list:
         if dataset.name == dataset_name:
             logger.success(f"Dataset called: {dataset_name} found in MLFlow Experiment with Experiment ID: {experiment_id}")
