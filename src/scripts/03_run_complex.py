@@ -2,13 +2,17 @@ import argparse
 import asyncio
 import json
 import os
+import re
+import tempfile
 import uuid
+from pathlib import Path
 from typing import Any, Coroutine, Optional, Union
 
 import json_repair
 from loguru import logger
 from mlflow.entities import SpanType
 from mlflow.genai.datasets import EvaluationDataset, search_datasets  # get_dataset
+from pydantic_ai import AgentRunError
 
 import mlflow
 
@@ -23,12 +27,6 @@ logger.info("Configuring defined variables...")
 # * ASSUMES:
 # * 1. USER PROMPT IS GIVEN (IN THIS CONTEXT, TAKEN DYNAMICALLY FROM EXPERIMENT DATASET)
 # * 2. SELECTED COMPLEXITY IS HIGH
-USER_PROMPT: str = {
-    "dataset_record_id": uuid.uuid4(),
-    "inputs": {
-        "question": "What is the capital of Great Britain?"
-    }
-}
 IS_COMPLEX: bool = True
 
 # PROMPTS
@@ -206,8 +204,19 @@ Provide the response strictly in the following format:
 """
 
 # CONFIGURATION
+
+# USER PROMPT (IF DESIRED) # ! CONFIGURABLE
+USER_PROMPT: str = {
+    "dataset_record_id": uuid.uuid4(),
+    "inputs": {
+        "question_id": "user_prompt_1",
+        "question": "What is the capital of Great Britain?",
+        "category": "user_prompt"
+    }
+}
+
 # NUMBER OF QUESTIONS TO BE EVALUATED/ASKED TO THE CASCADE.
-NUM_MAX_QUESTIONS: int = 50  # ! CONFIGURABLE
+NUM_MAX_QUESTIONS: int = 2  # ! CONFIGURABLE
 
 # CASCADE MODELS CONFIG
 CASCADE_MODELS_CONFIG: dict[str, str] = make_config()
@@ -216,7 +225,7 @@ COMPLEX_RUN_CONFIG_KEY: str = "cascade_complex_run"
 # JUDGE MODELS CONFIG
 JUDGE_MODELS_CONFIG_KEY: str = "judge_models"
 JUDGE_MODEL_KEY: str = "judge_model_1"  # ! CONFIGURABLE
-ACCEPTABLE_SCORE: float = 0.95  # ! CONFIGURABLE
+ACCEPTABLE_SCORE: float = 0.90  # ! CONFIGURABLE
 
 # CASCADE LEVEL
 MAX_CASCADE_LEVEL: int = 5  # ! CONFIGURABLE (1 <= value <= 5)
@@ -225,14 +234,39 @@ MAX_CASCADE_LEVEL: int = 5  # ! CONFIGURABLE (1 <= value <= 5)
 MLFLOW_TRACKING_URI: str = os.getenv(key="MLFLOW_TRACKING_URI", default="http://127.0.0.1:5000")
 EXPERIMENT_NAME: str = f"complex_workflow_run_max_{NUM_MAX_QUESTIONS}"  # ! CONFIGURABLE
 
-# EXPERIMENT DATASET
+# EXPERIMENT DATASET # ! CONFIGURABLE
 # * Arena Hard Auto v1.0
-# MLFLOW_DATASET_EXPERIMENT_NAME: str = "DATASET_Arena_Hard"
-# MLFLOW_DATASET_NAME: str = "arena_hard_auto"
+MLFLOW_DATASET_EXPERIMENT_NAME: str = "DATASET_Arena_Hard"
+MLFLOW_DATASET_NAME: str = "arena_hard_auto"
 
 # * Arena Hard Auto v2.0
-MLFLOW_DATASET_EXPERIMENT_NAME: str = "DATASET_Arena_Hard_V2"
-MLFLOW_DATASET_NAME: str = "arena_hard_v2_0"
+# MLFLOW_DATASET_EXPERIMENT_NAME: str = "DATASET_Arena_Hard_V2"
+# MLFLOW_DATASET_NAME: str = "arena_hard_v2_0"
+
+# RESULTS
+# RESULTS_PATH: str = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "results")  # ! CONFIGURABLE
+RESULTS_PATH: Path = Path(__file__).resolve().parent.parent / "results"  # ! CONFIGURABLE
+
+def init_dirs(paths: list[Union[Path, str]]) -> None:
+    """Helper method to initialize a list of directories.
+
+    Args:
+        paths (list[Union[Path, str]]): list of paths to the new directory.
+    """
+    logger.info(f"Attempting to initialize and create {len(paths)} directories...")
+    for path in paths:
+        path_obj: Path = Path(path)
+        logger.info(f"Creating directory at: {path_obj}")
+        if not path_obj.exists():
+            try:
+                path_obj.mkdir(parents=True)
+            except OSError as e:
+                logger.error(f"Error during creation of directory at: {path}: {e}")
+            else:
+                logger.success(f"Directory at: {path} was created succesfully.")
+        else:
+            logger.success(f"Directory at: {path} already existing. Skipping...")
+
 
 def perform_initial_mlflow_setup(mlflow_uri: str) -> None:
     """Function to set up basic MLFlow workflows.
@@ -555,6 +589,9 @@ async def run_working_agent(worker_agent: tuple[str, WorkingAgent], func: Corout
     if isinstance(agent_answer, Exception):
         logger.error(f"Agent {agent_id} failed: {agent_answer}")
         return (agent_id, None)
+    if isinstance(agent_answer, AgentRunError):
+        logger.error(f"Agent {agent_id} failed with AgentRunError: {agent_answer}")
+        return (agent_id, None)
     else:
         logger.success(f"Agent {agent_id} succeeded: {__format_response(long_string_log=agent_answer.content)}")
     
@@ -594,10 +631,12 @@ async def run_cascade_initial_answer(worker_agents: dict[str, WorkingAgent], pro
     agents_responses: dict[str, AgentResponse] = {}
     
     for response in results:
+        
         agent_id, response_content = response
         if not response_content:
             # Since order of results is preserved by asyncio.gather() function in the same order as awaitables in *aws = *tasks
             logger.error(f"Agent {agent_id} failed: {response_content}")
+            agents_responses[agent_id] = 'N/A'
         else:
             logger.success(f"Agent {agent_id} succeeded: {__format_response(long_string_log=response_content.content)}")
             agents_responses[agent_id] = response_content
@@ -877,7 +916,7 @@ def validator_agent_response_to_agents_reviews(validator_responses: dict[str, An
     
     workers_reviews: dict[str, str] = {}
     
-    validator_individual_reviews: dict[str, dict[str, Any]] = validator_responses.get("individual_reviews", {})
+    validator_individual_reviews: dict[str, dict[str, Any]] = validator_responses.get("evaluation", {}).get("individual_reviews", {})
     
     if not validator_individual_reviews:
         logger.warning("No individual reviews from ValidatorAgent was found. Maybe the response is incomplete or malformed.")
@@ -1050,8 +1089,133 @@ def log_final_answer_trace(question_id: str,
     logger.success(f"Logged final answer trace for question: {question_id}")
 
 
+def get_latest_results_version(results_path: Union[str, Path], extension: str = ".jsonl") -> Optional[str]:
+    """Helper function to extract from a directory the latest version of the iterations.
+
+    Results directory expected to contain:
+
+    ```
+    results/
+        - arena-hard-auto-v1.0/
+        - arena-hard-auto-v2.0/
+    ```
+
+    Args:
+        results_path (Union[str, Path]): Path to the results directory.
+
+    Returns:
+        Optional[str]: New iteration file basename (without extension).
+    """
+    results_path_dir: Path = Path(results_path)
+    
+    if not results_path_dir.exists():
+        logger.error(f"Results directory at: {results_path_dir} do not exist.")
+        return None
+    
+    pattern = re.compile(
+        rf"^iteration_(\d+){re.escape(extension)}$"
+    )
+    
+    iterations: list[tuple[int, str]] = []
+
+    for file in results_path_dir.iterdir():
+        if file.is_file():
+            match = pattern.match(file.name)
+            if match:
+                iterations.append(int(match.group(1)))
+
+    if not iterations:
+        logger.warning("No previous iterations found. Falling back to default version: iteration_1")
+        return "iteration_1"
+    
+    latest_iteration = max(iterations)
+    next_iteration = latest_iteration + 1
+
+    new_iteration_str = f"iteration_{next_iteration}"
+    logger.success(f"Previous iterations exist. Increasing the version: {new_iteration_str}")
+    
+    return new_iteration_str
+    
+
+def save_results_to_jsonl(question_id: str,
+                          num_questions: int,
+                          category: str,
+                          question: str,
+                          answer: str,
+                          cascade_lvl: int,
+                          winner_model: str,
+                          judge_model: str,
+                          score: float,
+                          save_to_path_file: str) -> None:
+    """Save definitive answer results to a results local file (default - JSONL format).
+
+    Args:
+        question_id (str): ID of the question.
+        category (str): Category of the question. Determines the iteration of the ArenaHardAuto.
+        question (str): Question/Prompt
+        answer (str): Worker models answer to the question/prompt.
+        cascade_lvl (int): Last cascade level that yielded the answer.
+        winner_model (str): Best worker agent that yielded the answer.
+        judge_model (str): Validator agent used for the iteration.
+        score (float): Achieved score by the best worker agent.
+        save_to_path_file (str): Path to the file that will contain the results per iteration
+    """
+    jsonl_entry: dict[str, Union[str, float, int]] = {
+        "question_id": question_id,
+        "num_question_selected": num_questions,
+        "category": category,
+        "question": question,
+        "answer": answer,
+        "cascade_lvl": cascade_lvl,
+        "winner_model": winner_model,
+        "judge_model": judge_model,
+        "score": score
+    }
+    
+    with open(save_to_path_file, "a", encoding="utf-8") as f_jsonl:
+        f_jsonl.write(json.dumps(jsonl_entry, ensure_ascii=False) + "\n")
+    
+    # TODO: LOG IN MLFLOW
+    # with tempfile.NamedTemporaryFile("w", delete=False, suffix=extension, encoding="utf-8") as tmp_file:
+    #     tmp_file.write(json.dumps(jsonl_entry, ensure_ascii=False) + "\n")
+    #     tmp_file_path = Path(tmp_file.name)
+
+    # # Log artifact under a folder for the category
+    # mlflow.log_artifact(str(tmp_file_path), artifact_path=f"results/{category}")
+
+    # # Clean up temp file if you want
+    # tmp_file_path.unlink()
+
+
+def map_categories_to_dir_paths(questions_mapping: dict[str, dict[str, str]], extension: str = ".jsonl") -> dict[str, Path]:
+    categories = set(q.get('category', 'unknown') for q in questions_mapping.values())
+
+    logger.info(f"Attempting to create directories for each category: {categories}")
+    for category_name in categories:
+        logger.info(f"Creating directory for category: {category_name}")
+        category_dir: Path = Path(RESULTS_PATH).resolve() / category_name
+        init_dirs(paths=[category_dir])
+    
+    extension: str = ".jsonl"
+    logger.info(f"Selected results file extension: {extension}")
+    
+    category_iteration_files: dict[str, Path] = {}
+    
+    for category_name in categories:
+        logger.info("Creating categories paths for each category")
+        specific_category_dir: Path = Path(RESULTS_PATH).resolve() / category_name
+        results_file_version: str = get_latest_results_version(results_path=specific_category_dir, extension=extension)
+        results_file: Path = specific_category_dir / f"{results_file_version}{extension}"
+        category_iteration_files[category_name] = results_file
+        logger.info(f"Category '{category_name}' will use file: {results_file}")
+
+    return category_iteration_files
+
 def main() -> None:
     # parser = argparse.ArgumentParser()
+    
+    # * STEP 0: Prerequisites
+    init_dirs(paths=[RESULTS_PATH])
     
     # * STEP 1: Setting up MLFlow
     perform_initial_mlflow_setup(mlflow_uri=MLFLOW_TRACKING_URI)
@@ -1095,6 +1259,10 @@ def main() -> None:
     
     experiment_id, experiment_name, version = get_or_create_versioned_experiment(experiment_name=EXPERIMENT_NAME)
     mlflow.set_experiment(experiment_name)
+    
+    # * Create paths for each category assigned to questions
+    extension: str = ".jsonl"
+    category_iteration_files: dict[str, Path] = map_categories_to_dir_paths(questions_mapping=questions_mapping, extension=extension)
     
     # * Instantiate Judge Agent
     judge_models = load_models_from_config(config=CASCADE_MODELS_CONFIG, config_class_key=JUDGE_MODELS_CONFIG_KEY)
@@ -1226,7 +1394,22 @@ def main() -> None:
                         best_confidence_score=validator_answer['evaluation']['best_answer']['best_confidence_score']
                     )
                     
-                    logger.success(f"Best answer ({validator_answer['evaluation']['best_answer']['best_confidence_score']}) was generated by: {validator_answer['evaluation']['best_answer']['best_worker_model_id']} at cascade level: {current_cascade_level}, with answer: {__format_response(long_string_log=synthetized_final_answer)}.")
+                    logger.success(f"Best answer ({validator_answer['evaluation']['best_answer']['best_confidence_score']}) was generated by: {validator_answer['evaluation']['best_answer']['best_worker_model_id']} at cascade level: {current_cascade_level}, with answer: {__format_response(long_string_log=final_answers[validator_answer['evaluation']['best_answer']['best_worker_model_id']].content)}.")
+                    
+                    results_file: Path = category_iteration_files[question_category]
+                    
+                    save_results_to_jsonl(
+                        question_id=question_id,
+                        num_questions=NUM_MAX_QUESTIONS,
+                        category=question_category,
+                        question=original_question,
+                        answer=final_answers[validator_answer['evaluation']['best_answer']['best_worker_model_id']].content,
+                        cascade_lvl=current_cascade_level,
+                        winner_model=cascade_lvl_models[validator_answer['evaluation']['best_answer']['best_worker_model_id']]['model_name'],
+                        judge_model=validator_agent.model_name,
+                        score=validator_answer['evaluation']['best_answer']['best_confidence_score'],
+                        save_to_path_file=results_file
+                    )
                     
                     break
 
@@ -1274,6 +1457,21 @@ def main() -> None:
                 
                 print(f"Synthetized final answer:\n{synthetized_final_answer}")
                 print(f"FINAL ANSWER (DIRECT FROM WORKER):\n{final_answers[validator_answer['evaluation']['best_answer']['best_worker_model_id']].content}")
+
+                results_file: Path = category_iteration_files[question_category]
+                
+                save_results_to_jsonl(
+                    question_id=question_id,
+                    num_questions=NUM_MAX_QUESTIONS,
+                    category=question_category,
+                    question=original_question,
+                    answer=final_answers[validator_answer['evaluation']['best_answer']['best_worker_model_id']].content,
+                    cascade_lvl=current_cascade_level,
+                    winner_model=cascade_lvl_models[validator_answer['evaluation']['best_answer']['best_worker_model_id']]['model_name'],
+                    judge_model=validator_agent.model_name,
+                    score=validator_answer['evaluation']['best_answer']['best_confidence_score'],
+                    save_to_path_file=results_file
+                )
             
                 logger.success(f"Cascade level {current_cascade_level} completed.")
                 # break
