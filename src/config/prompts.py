@@ -22,7 +22,12 @@ Assess the responses based on:
    - If COMPARING responses: Determine which is better (A, B, or Tie).
 
 ### OUTPUT FORMAT
-You must output a single JSON block strictly following this schema. Do not output markdown code blocks around it, just the raw JSON. Be careful when forming the JSON. It should be valid from the point of view of the structure.
+Be careful when forming the JSON. It should be valid from the point of view of the structure:
+1. Return ONLY valid JSON.
+2. Use double quotes for keys and string values.
+3. Do NOT return Python dictionaries.
+4. Do NOT include backticks.
+You must output a single JSON block strictly following this schema. Do not output markdown code blocks around it, just the raw JSON. 
 
 1. If analyzing a single response:
 ```json

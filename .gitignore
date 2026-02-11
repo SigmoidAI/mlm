@@ -1,7 +1,7 @@
 mlflow_postgres_volume
 mflow_artifact_volume
 postgres_data
-
+src/results/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
