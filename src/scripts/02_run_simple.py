@@ -61,9 +61,11 @@ except (ImportError, AttributeError):
 # MLflow Configuration (from .env)
 MLFLOW_URI: str = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000/")
 
+
 # Dataset Configuration
-DATASET_EXPERIMENT_NAME: str = "DATASET_Arena_Hard_V2"
-MLFLOW_DATASET_NAME: str = "arena_hard_v2_0"
+DATASET_ID: str = os.getenv("DATASET_ID")
+if not DATASET_ID:
+    raise RuntimeError("DATASET_ID must be set in your .env file.")
 NUM_QUESTIONS: int = int(os.getenv("NUM_QUESTIONS", "0"))  # 0 = use all questions
 
 # Model Configuration
@@ -115,46 +117,12 @@ def create_or_get_experiment(experiment_name: str) -> str:
 
 # DATASET LOADING
 
-def get_experiment_dataset(
-    experiment_name: str = DATASET_EXPERIMENT_NAME, 
-    dataset_name: str = MLFLOW_DATASET_NAME
-) -> Optional[Dict[str, Any]]:
-    """Retrieve experiment dataset by MLFlow experiment name.
 
-    Args:
-        experiment_name: Name of the MLFlow Experiment containing a dataset.
-        dataset_name: Name of the Dataset in MLFlow Experiment.
-
-    Returns:
-        Dict representation of the dataset from MLFlow Experiment, or None if not found.
-    """
-    experiment_id = create_or_get_experiment(experiment_name=experiment_name)
-    print(f"Looking for dataset in experiment ID: {experiment_id}")
-    
-    datasets_list: list[EvaluationDataset] = search_datasets(experiment_ids=experiment_id)
-    if not datasets_list:
-        print(f"No datasets found in experiment ID: {experiment_id}")
-        return None
-    
-    print(f"Found {len(datasets_list)} dataset(s) in experiment")
-    for dataset in datasets_list:
-        if dataset.name == dataset_name:
-            print(f"Dataset '{dataset_name}' found!")
-            return dataset.to_dict()
-    
-    print(f"Dataset '{dataset_name}' not found in experiment")
-    return None
-
-
-# Load dataset at module level
-_dataset_dict = get_experiment_dataset()
-if _dataset_dict is None:
-    raise RuntimeError(
-        f"Could not load dataset '{MLFLOW_DATASET_NAME}' "
-        f"from experiment '{DATASET_EXPERIMENT_NAME}'"
-    )
-RECORDS = _dataset_dict
-print(f"Loaded {len(RECORDS['records'])} records")
+# Load dataset at module level using DATASET_ID and get_dataset
+from mlflow.genai.datasets import get_dataset
+dataset = get_dataset(dataset_id=DATASET_ID)
+RECORDS = dataset.to_dict()
+print(f"Loaded {len(RECORDS['records'])} records from dataset ID {DATASET_ID}")
 
 
 # EXPERIMENT MANAGEMENT
