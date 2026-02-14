@@ -20,7 +20,7 @@ from typing import Any, Dict, Optional
 # Environment Setup (must happen before other imports)
 from dotenv import load_dotenv
 
-env_path = Path(__file__).parent.parent.parent / ".env"
+env_path = Path(__file__).parent.parent.parent / ".envfile"
 load_dotenv(dotenv_path=env_path)
 
 # Add src to path for direct script execution
@@ -37,6 +37,7 @@ if root_path not in sys.path:
 import yaml
 import mlflow
 import mlflow.pydantic_ai
+from mlflow.entities import SpanType
 from mlflow.genai.datasets import EvaluationDataset, search_datasets
 import json
 results_jsonl_path = os.path.join(os.path.dirname(__file__), "..", "resources", "results.jsonl")
@@ -46,6 +47,10 @@ from src.agents.pydantic_agent import WorkingAgent, ValidatorAgent
 
 # Suppress Warnings
 warnings.filterwarnings("ignore", category=ResourceWarning)
+import openai.resources.chat.completions
+from collections import defaultdict
+
+
 
 try:
     import openai._base_client as _oai_client
@@ -113,6 +118,84 @@ def create_or_get_experiment(experiment_name: str) -> str:
         experiment_id = experiment.experiment_id
         print(f"Using existing experiment: {experiment_name} (ID: {experiment_id})")
     return experiment_id
+
+
+def calculate_openrouter_cost(model_config: Dict[str, Any], input_tokens: int, output_tokens: int) -> Dict[str, float]:
+    """Calculate cost from model config pricing.
+
+    Args:
+        model_config: Model configuration dict with 'pricing' field
+        input_tokens: Number of input tokens
+        output_tokens: Number of output tokens
+
+    Returns:
+        Dict with 'input_cost', 'output_cost', 'total_cost'
+    """
+    pricing = model_config.get('pricing', {'input': 0.0, 'output': 0.0})
+    input_cost = (input_tokens / 1_000_000) * pricing['input']
+    output_cost = (output_tokens / 1_000_000) * pricing['output']
+
+    return {
+        "input_cost": input_cost,
+        "output_cost": output_cost,
+        "total_cost": input_cost + output_cost
+    }
+
+
+# Global tracker
+USAGE_TRACKER = defaultdict(int)
+USAGE_TRACKER['last_cost'] = 0.0
+USAGE_TRACKER['last_input'] = 0
+USAGE_TRACKER['last_output'] = 0
+_orig_create_sync = openai.resources.chat.completions.Completions.create
+_orig_create_async = openai.resources.chat.completions.AsyncCompletions.create
+
+
+def _extract_cost_from_response(response):
+    """Helper to pull cost from response object"""
+    if hasattr(response, 'usage') and response.usage:
+        in_tokens = response.usage.prompt_tokens
+        out_tokens = response.usage.completion_tokens
+
+        # OpenRouter 'cost' field is often hidden in 'model_extra' by the OpenAI SDK
+        # We convert to dict to find it safely
+        try:
+            usage_dict = response.usage.model_dump()
+            exact_cost = usage_dict.get('cost')
+
+            # Update Global Tracker
+            USAGE_TRACKER['last_input'] = in_tokens
+            USAGE_TRACKER['last_output'] = out_tokens
+
+            if exact_cost is not None:
+                USAGE_TRACKER['last_cost'] = float(exact_cost)
+                print(f"\n[HOOK] 💰 OpenRouter reported exact cost: ${float(exact_cost):.6f}")
+            else:
+                USAGE_TRACKER['last_cost'] = 0.0
+                print(f"\n[HOOK] ⚠️ Cost not found. Tokens: {in_tokens} in / {out_tokens} out")
+        except Exception as e:
+            print(f"\n[HOOK] Error parsing usage: {e}")
+
+
+# 2. Define Sync Spy
+def _spy_create_sync(*args, **kwargs):
+    response = _orig_create_sync(*args, **kwargs)
+    _extract_cost_from_response(response)
+    return response
+
+
+# 3. Define Async Spy (CRITICAL for PydanticAI)
+async def _spy_create_async(*args, **kwargs):
+    response = await _orig_create_async(*args, **kwargs)
+    _extract_cost_from_response(response)
+    return response
+
+
+# 4. Apply Patches
+openai.resources.chat.completions.Completions.create = _spy_create_sync
+openai.resources.chat.completions.AsyncCompletions.create = _spy_create_async
+print("✅ Universal Cost Hook Installed (Sync + Async)!")
+# --- END OF UNIVERSAL COST HOOK ---
 
 
 # DATASET LOADING
@@ -308,19 +391,19 @@ def judge_answer(
 # PROMPT BUILDING
 
 def build_refinement_prompt(
-    question: str, 
-    prev_answer: str, 
-    issue: str, 
+    question: str,
+    prev_answer: str,
+    issue: str,
     iteration: int
 ) -> str:
     """Build prompt that includes previous failed attempt.
-    
+
     Args:
         question: The original question.
         prev_answer: The previous answer that was rejected.
         issue: Description of why the previous answer was rejected.
         iteration: Current iteration number (0-indexed).
-        
+
     Returns:
         Formatted refinement prompt string.
     """
@@ -337,7 +420,8 @@ def build_refinement_prompt(
 def run_cascade(
     question: str, 
     question_id: str, 
-    models: Dict[str, Any]
+    models: Dict[str, Any],
+    judge_key: str = JUDGE_MODEL_KEY
 ) -> Dict[str, Any]:
     """Try each model in cascade until judge approves an answer.
     
@@ -371,6 +455,30 @@ def run_cascade(
         result = agent.run_sync(prompt)
         answer = result.content
 
+        if USAGE_TRACKER['last_cost'] > 0:
+            total_real_cost = USAGE_TRACKER['last_cost']
+
+            # Create a dict so the rest of your script (history logging) stays happy
+            model_cost = {
+                "input_cost": 0.0,  # Unknown split, but total is correct
+                "output_cost": 0.0,
+                "total_cost": total_real_cost
+            }
+            print(f"   -> Cost (Official): ${total_real_cost:.6f}")
+
+        else:
+            # Fallback Calculation
+            real_input = USAGE_TRACKER['last_input'] or ((len(prompt) // 4) + 500)
+            real_output = USAGE_TRACKER['last_output'] or (len(answer) // 4)
+
+            model_cost = calculate_openrouter_cost(config, real_input, real_output)
+
+            # FIXED PRINT STATEMENT BELOW:
+            print(f"   -> Cost (Calculated): ${model_cost['total_cost']:.6f}")
+
+        USAGE_TRACKER['last_cost'] = 0.0
+        USAGE_TRACKER['last_input'] = 0
+        USAGE_TRACKER['last_output'] = 0
         # Get judge score and verdict
         try:
             judge_result = None
@@ -389,6 +497,24 @@ def run_cascade(
         score = judge_result.get("score", 0.0) if judge_result else 0.0
         verdict = judge_result.get("verdict", "Unknown") if judge_result else "Unknown"
         feedback = judge_result.get("feedback", "") if judge_result else ""
+
+        # Capture judge cost from tracker
+        if USAGE_TRACKER['last_cost'] > 0:
+            judge_cost = {
+                "input_cost": 0.0,
+                "output_cost": 0.0,
+                "total_cost": USAGE_TRACKER['last_cost']
+            }
+            print(f"   -> Judge Cost (Official): ${judge_cost['total_cost']:.6f}")
+        else:
+            # Fallback calculation
+            judge_cfg = load_judge_config(judge_key)
+            judge_input = int((len(question.split()) + len(answer.split())) * 1.3)
+            judge_output = int((len(feedback.split()) if feedback else 50) * 1.3)
+            judge_cost = calculate_openrouter_cost(judge_cfg, judge_input, judge_output)
+            print(f"   -> Judge Cost (Calculated): ${judge_cost['total_cost']:.6f}")
+
+
         is_good = score >= ACCEPTABLE_SCORE and verdict == "Valid"
         reason = f"Score: {score:.2f}, Verdict: {verdict}"
         if feedback:
@@ -397,23 +523,30 @@ def run_cascade(
         history.append({
             "iteration": i + 1,
             "model": model_key,
+            "model_name": config['model_name'],
             "answer": answer,
             "passed": is_good,
             "reason": reason,
             "score": score,
-            "verdict": verdict
+            "verdict": verdict,
+            "model_cost": model_cost,
+            "judge_cost": judge_cost,
+            "iteration_total_cost": model_cost["total_cost"] + judge_cost["total_cost"]
         })
         answers_with_scores.append({
             "answer": answer,
             "model": model_key,
+            "model_name": config['model_name'],
             "score": score,
             "iteration": i + 1,
             "verdict": verdict
         })
 
         mlflow.log_metrics({
-            f"iter_{i+1}_length": len(answer),
-            f"iter_{i+1}_passed": 1 if is_good else 0
+            f"iter_{i + 1}_length": len(answer),
+            f"iter_{i + 1}_passed": 1 if is_good else 0,
+            f"iter_{i + 1}_model_cost": model_cost["total_cost"],
+            f"iter_{i + 1}_judge_cost": judge_cost["total_cost"]
         })
 
         print(f"   -> {reason}")
@@ -423,6 +556,8 @@ def run_cascade(
         else:
             prompt = build_refinement_prompt(question, answer, reason, i)
 
+    total_cost = sum(h["iteration_total_cost"] for h in history)
+
     # Find the best valid answer (verdict == 'Valid'), highest score
     valid_answers = [a for a in answers_with_scores if a["verdict"] == "Valid"]
     if valid_answers:
@@ -430,14 +565,27 @@ def run_cascade(
         success = best["score"] >= ACCEPTABLE_SCORE
     else:
         # If none are valid, fall back to highest score overall
-        best = max(answers_with_scores, key=lambda x: x["score"]) if answers_with_scores else {"answer": "", "model": model_names[-1], "score": 0.0, "iteration": max_iter, "verdict": "Unknown"}
+        best = max(answers_with_scores, key=lambda x: x["score"]) if answers_with_scores else {"answer": "",
+                                                                                               "model": model_names[-1],
+                                                                                               "model_name": models[
+                                                                                                   model_names[-1]][
+                                                                                                   "model_name"],
+                                                                                               "score": 0.0,
+                                                                                               "iteration": max_iter,
+                                                                                               "verdict": "Unknown"}
         success = False
     return {
         "answer": best["answer"],
         "iterations": best["iteration"],
         "model": best["model"],
+        "model_name": best["model_name"],
         "success": success,
-        "history": history
+        "history": history,
+        "total_cost": total_cost,
+        "cost_breakdown": {
+            "total_model_cost": sum(h["model_cost"]["total_cost"] for h in history),
+            "total_judge_cost": sum(h["judge_cost"]["total_cost"] for h in history)
+        }
     }
 
 
@@ -464,11 +612,12 @@ def run_evaluation() -> None:
     
     success_count = 0
     total_iterations = 0
+    total_cost_all = 0.0
     total_records = len(RECORDS["records"])
     num_questions = NUM_QUESTIONS if NUM_QUESTIONS > 0 else total_records
     
 
-    for idx, record in enumerate(RECORDS["records"][:num_questions]):
+    for idx, record in enumerate(RECORDS["records"][61:num_questions]):
         question = record["inputs"]["question"]
         question_id = record["inputs"]["question_id"]
         category = record["inputs"].get("category", "unknown")
@@ -489,10 +638,40 @@ def run_evaluation() -> None:
             try:
                 result = run_cascade(question, question_id, models)
 
+                total_cost_all += result["total_cost"]
+
+                best_response = {
+                    "score": result.get("score", 0.0),  # Won't exist, will be 0.0
+                    "verdict": "Valid" if result["success"] else "Invalid",
+                    "iteration": result["iterations"],
+                    "model": result["model"],
+                    "model_name": result["model_name"]
+                }
+
+                # CREATE MANUAL TRACE FOR BEST RESPONSE
+                with mlflow.start_span(name="best_response", span_type=SpanType.CHAIN) as span:
+                    span.set_inputs({
+                        "question_id": question_id,
+                        "question": question
+                    })
+                    span.set_outputs({
+                        "answer": result["answer"],
+                        "model": result["model_name"]
+                    })
+                    span.set_attributes({
+                        "score": best_response["score"],
+                        "verdict": best_response["verdict"],
+                        "iteration": result["iterations"],
+                        "success": result["success"]
+                    })
                 mlflow.log_metrics({
                     "iterations": result["iterations"],
                     "success": 1 if result["success"] else 0,
-                    "answer_length": len(result["answer"])
+                    "answer_length": len(result["answer"]),
+                    "total_cost": result["total_cost"],
+                    "model_cost": result["cost_breakdown"]["total_model_cost"],
+                    "judge_cost": result["cost_breakdown"]["total_judge_cost"]
+
                 })
                 mlflow.log_dict(result["history"], "history.json")
 
@@ -504,11 +683,13 @@ def run_evaluation() -> None:
                     "answer": result["answer"],
                     "iterations": result["iterations"],
                     "model": result["model"],
+                    "model_name": result["model_name"],
                     "success": result["success"],
+                    "total_cost": result["total_cost"],
                     "history": result["history"]
                 }
-                with open(results_jsonl_path, "a", encoding="utf-8") as f_jsonl:
-                    f_jsonl.write(json.dumps(jsonl_entry, ensure_ascii=False) + "\n")
+                # with open(results_jsonl_path, "a", encoding="utf-8") as f_jsonl:
+                #     f_jsonl.write(json.dumps(jsonl_entry, ensure_ascii=False) + "\n")
 
                 if result["success"]:
                     success_count += 1
@@ -529,6 +710,8 @@ def run_evaluation() -> None:
     print(f"{'='*60}")
     print(f"Results: {success_count}/{num_questions} ({rate:.1f}%)")
     print(f"Avg iterations: {avg_iter:.2f}")
+    print(f"Total cost: ${total_cost_all:.4f}")
+    print(f"Avg cost per question: ${total_cost_all / num_questions:.4f}")
     print(f"MLflow: {MLFLOW_URI}/#/experiments/{exp_id}")
     print(f"{'='*60}")
 

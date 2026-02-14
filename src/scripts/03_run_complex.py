@@ -7,6 +7,9 @@ import tempfile
 import uuid
 from pathlib import Path
 from typing import Any, Coroutine, Optional, Union
+import openai
+import openai.resources.chat.completions
+from collections import defaultdict
 
 import json_repair
 from loguru import logger
@@ -540,6 +543,61 @@ def initialize_judge_agent(judges_config: dict[str, Any], judge_key: str) -> Opt
     
     return validator_agent
 
+USAGE_TRACKER = defaultdict(int)
+USAGE_TRACKER['last_cost'] = 0.0
+USAGE_TRACKER['last_input'] = 0
+USAGE_TRACKER['last_output'] = 0
+_orig_create_sync = openai.resources.chat.completions.Completions.create
+_orig_create_async = openai.resources.chat.completions.AsyncCompletions.create
+
+
+def _extract_cost_from_response(response):
+    """Helper to pull cost from response object"""
+    if hasattr(response, 'usage') and response.usage:
+        in_tokens = response.usage.prompt_tokens
+        out_tokens = response.usage.completion_tokens
+
+        # OpenRouter 'cost' field is often hidden in 'model_extra' by the OpenAI SDK
+        # We convert to dict to find it safely
+        try:
+            usage_dict = response.usage.model_dump()
+            exact_cost = usage_dict.get('cost')
+
+            # Update Global Tracker
+            USAGE_TRACKER['last_input'] = in_tokens
+            USAGE_TRACKER['last_output'] = out_tokens
+
+            if exact_cost is not None:
+                USAGE_TRACKER['last_cost'] = float(exact_cost)
+                print(f"\n[HOOK] 💰 OpenRouter reported exact cost: ${float(exact_cost):.6f}")
+            else:
+                USAGE_TRACKER['last_cost'] = 0.0
+                print(f"\n[HOOK] ⚠️ Cost not found. Tokens: {in_tokens} in / {out_tokens} out")
+        except Exception as e:
+            print(f"\n[HOOK] Error parsing usage: {e}")
+
+
+# 2. Define Sync Spy
+def _spy_create_sync(*args, **kwargs):
+    response = _orig_create_sync(*args, **kwargs)
+    _extract_cost_from_response(response)
+    return response
+
+
+# 3. Define Async Spy (CRITICAL for PydanticAI)
+async def _spy_create_async(*args, **kwargs):
+    response = await _orig_create_async(*args, **kwargs)
+    _extract_cost_from_response(response)
+    return response
+
+
+# 4. Apply Patches
+openai.resources.chat.completions.Completions.create = _spy_create_sync
+openai.resources.chat.completions.AsyncCompletions.create = _spy_create_async
+print("✅ Universal Cost Hook Installed (Sync + Async)!")
+# --- END OF UNIVERSAL COST HOOK ---
+
+
 
 def __clean_full_string(string_to_clean: str) -> str:
     """Helper function to clean strings from \\n \\t \\r symbols.
@@ -570,7 +628,7 @@ def __format_response(long_string_log: str, len_portion: int = None) -> str:
     return f"{__clean_full_string(string_to_clean=left_portion)}...{__clean_full_string(string_to_clean=right_portion)}"
 
 
-async def run_working_agent(worker_agent: tuple[str, WorkingAgent], func: Coroutine, **kwargs) -> tuple[str, AgentResponse]:
+async def run_working_agent(worker_agent: tuple[str, WorkingAgent], func: Coroutine, **kwargs) -> tuple[str, AgentResponse, dict]:
     """Run an individual working agent on the same cascade level to generate answers to the provided prompt.
 
     Can be used with any answer generation from WorkingAgent class by passing its method function as an argument.
@@ -584,8 +642,28 @@ async def run_working_agent(worker_agent: tuple[str, WorkingAgent], func: Corout
     """
     agent_id, agent = worker_agent
     func_kwargs = {**kwargs}
+
+    # Reset tracker before call
+    USAGE_TRACKER['last_cost'] = 0.0
+    USAGE_TRACKER['last_input'] = 0
+    USAGE_TRACKER['last_output'] = 0
     
     agent_answer: AgentResponse = await func(**func_kwargs)
+
+    # Capture cost after call
+    if USAGE_TRACKER['last_cost'] > 0:
+        cost = {
+            "input_cost": 0.0,
+            "output_cost": 0.0,
+            "total_cost": USAGE_TRACKER['last_cost']
+        }
+    else:
+        # Fallback estimation
+        cost = {
+            "input_cost": 0.0,
+            "output_cost": 0.0,
+            "total_cost": 0.0
+        }
     
     if isinstance(agent_answer, Exception):
         logger.error(f"Agent {agent_id} failed: {agent_answer}")
@@ -597,10 +675,10 @@ async def run_working_agent(worker_agent: tuple[str, WorkingAgent], func: Corout
         logger.success(f"Agent {agent_id} succeeded: {__format_response(long_string_log=agent_answer.content)}")
     
     logger.success(f"Generated valid response by agent: {agent_id} - {agent.model_id}")
-    return (agent_id, agent_answer)
+    return  (agent_id, agent_answer, cost)
 
 
-async def run_cascade_initial_answer(worker_agents: dict[str, WorkingAgent], prompt_data: tuple[str, str], current_level: int = 1) -> Optional[dict[str, AgentResponse]]:
+async def run_cascade_initial_answer(worker_agents: dict[str, WorkingAgent], prompt_data: tuple[str, str], current_level: int = 1) -> tuple[dict[str, AgentResponse], float]:
     """Generate initial answers concurrently.
 
     Args:
@@ -609,7 +687,7 @@ async def run_cascade_initial_answer(worker_agents: dict[str, WorkingAgent], pro
         current_level (int, optional): Current level of the cascade. Defaults to 1.
 
     Returns:
-        Optional[dict[str, AgentResponse]]: Mapping of AgentResponse objects to the user prompt.
+        tuple[dict[str, AgentResponse], float]: Responses and total cost
     """
     prompt_id, prompt_question = prompt_data
     logger.info(f"Starting initial answer generation at cascade level: {current_level} with: {len(worker_agents.keys())} working agents and with prompt with ID: {prompt_id} - \"{__format_response(long_string_log=prompt_question)}\"")
@@ -630,10 +708,14 @@ async def run_cascade_initial_answer(worker_agents: dict[str, WorkingAgent], pro
     results: list[tuple[str, AgentResponse]] = await asyncio.gather(*tasks, return_exceptions=True)
 
     agents_responses: dict[str, AgentResponse] = {}
-    
+    total_cost = 0.0
+
+
     for response in results:
         
-        agent_id, response_content = response
+        agent_id, response_content, cost = response
+        total_cost += cost['total_cost']
+
         if not response_content:
             # Since order of results is preserved by asyncio.gather() function in the same order as awaitables in *aws = *tasks
             logger.error(f"Agent {agent_id} failed: {response_content}")
@@ -643,10 +725,10 @@ async def run_cascade_initial_answer(worker_agents: dict[str, WorkingAgent], pro
             agents_responses[agent_id] = response_content
             
     logger.success(f"Generated {len(agents_responses.keys())} valid responses out of {len(worker_agents)} agents")
-    return agents_responses
+    return agents_responses, total_cost
 
 
-async def run_cascade_debate(worker_agents: dict[str, WorkingAgent], prev_answers: dict[str, AgentResponse], current_level: int = 1) -> Optional[dict[str, AgentResponse]]:
+async def run_cascade_debate(worker_agents: dict[str, WorkingAgent], prev_answers: dict[str, AgentResponse], current_level: int = 1) -> tuple[dict[str, AgentResponse], float]:
     """Generate critique/debate responses where each agent reviews peer responses.
 
     Args:
@@ -655,7 +737,7 @@ async def run_cascade_debate(worker_agents: dict[str, WorkingAgent], prev_answer
         current_level (int, optional): Current cascade level. Defaults to 1.
 
     Returns:
-        Optional[dict[str, AgentResponse]]: Dict of critique AgentResponse objects mapped to their generator agent ID.
+        tuple[dict[str, AgentResponse], float]: Critiques and total cost
     """
     logger.info(f"Starting debate process at cascade level: {current_level} with: {len(worker_agents.keys())} working agents")
     
@@ -695,7 +777,7 @@ async def run_cascade_debate(worker_agents: dict[str, WorkingAgent], prev_answer
             "peer_responses": individual_peer_responses
         }
         
-        logger.info(f"Agent {agent_id} will critique {len(individual_peer_responses)} ({" ".join([peer_response.author_id for peer_id, peer_response in prev_answers.items() if peer_id != agent_id])}) peer response(s)")
+        #logger.info(f"Agent {agent_id} will critique {len(individual_peer_responses)} ({" ".join([peer_response.author_id for peer_id, peer_response in prev_answers.items() if peer_id != agent_id])}) peer response(s)")
         
         tasks.append(
             run_working_agent(
@@ -706,12 +788,14 @@ async def run_cascade_debate(worker_agents: dict[str, WorkingAgent], prev_answer
         )
         
     logger.info(f"Executing {len(tasks)} critique tasks in parallel")
-    critiques: list[tuple[str, AgentResponse]] = await asyncio.gather(*tasks, return_exceptions=True)
+    critiques: list[tuple[str, AgentResponse, dict]] = await asyncio.gather(*tasks, return_exceptions=True)
     
     valid_critiques: dict[str, AgentResponse] = {}
+    total_cost = 0.0
     
     for critique in critiques:
-        agent_id, critique_content = critique
+        agent_id, critique_content, cost = critique
+        total_cost += cost['total_cost']
         if not critique_content:
             # Since order of results is preserved by asyncio.gather() function in the same order as awaitables in *aws = *tasks
             logger.error(f"Agent {agent_id} critique failed: {critique}")
@@ -720,7 +804,7 @@ async def run_cascade_debate(worker_agents: dict[str, WorkingAgent], prev_answer
             valid_critiques[agent_id] = critique_content
             
     logger.success(f"Debate completed. Generated {len(valid_critiques.keys())} valid critiques out of {len(worker_agents)} agents")
-    return valid_critiques
+    return valid_critiques, total_cost
 
 
 async def run_validation(judge_agent: ValidatorAgent, question: str, prompt: Prompt, answers: dict[str, AgentResponse]) -> Optional[dict[str, Any]]:
@@ -822,7 +906,7 @@ async def run_cascade_refinement_loop(worker_agents: dict[str, WorkingAgent],
                                       init_question: str,
                                       init_answers: dict[str, AgentResponse],
                                       critiques: dict[str, AgentResponse],
-                                      current_level: int = 1) -> Optional[dict[str, AgentResponse]]:
+                                      current_level: int = 1) -> tuple[dict[str, AgentResponse], float]:
     """Generate refined answers using WorkingAgent objects and their initial answers and peer reviews/critiques.
 
     Args:
@@ -859,12 +943,14 @@ async def run_cascade_refinement_loop(worker_agents: dict[str, WorkingAgent],
             )
         )
     
-    refinement_results: list[tuple[str, AgentResponse]] = await asyncio.gather(*tasks, return_exceptions=True)
+    refinement_results: list[tuple[str, AgentResponse, dict]] = await asyncio.gather(*tasks, return_exceptions=True)
 
     agents_responses: dict[str, AgentResponse] = {}
+    total_cost = 0.0
     
     for refinement_result in refinement_results:
-        agent_id, refinement_result_content = refinement_result
+        agent_id, refinement_result_content, cost = refinement_result
+        total_cost += cost['total_cost']
         if not refinement_result_content:
             # Since order of results is preserved by asyncio.gather() function in the same order as awaitables in *aws = *tasks
             logger.error(f"Agent {agent_id} refinement failed: {refinement_result_content}")
@@ -873,7 +959,7 @@ async def run_cascade_refinement_loop(worker_agents: dict[str, WorkingAgent],
             agents_responses[agent_id] = refinement_result_content
             
     logger.success(f"Generated {len(agents_responses.keys())} valid refined responses out of {len(worker_agents)} agents")
-    return agents_responses
+    return agents_responses, total_cost
 
 
 def convert_agents_answers_to_ensemble_prompt(answers: dict[str, AgentResponse]) -> str:
@@ -1022,7 +1108,8 @@ def log_final_answer_trace(question_id: str,
                            synthetized_answer: str, 
                            best_worker_model_id: str, 
                            cascade_level: int, 
-                           best_confidence_score: float) -> None:
+                           best_confidence_score: float,
+                           total_cost: float) -> None:
     """Log the final answer trace to MLflow.
 
     Args:
@@ -1049,7 +1136,8 @@ def log_final_answer_trace(question_id: str,
         "acceptable_score": acceptable_score,
         "final_best_model" if is_definitive else "best_model": best_worker_model_id,
         "final_cascade_level" if is_definitive else "cascade_level": cascade_level,
-        "final_best_confidence_score" if is_definitive else "best_confidence_score": best_confidence_score
+        "final_best_confidence_score" if is_definitive else "best_confidence_score": best_confidence_score,
+        "total_cost": total_cost
     }
     
     with mlflow.start_span(name="best_final_answer_trace" if is_definitive else f"best_answer_trace_lvl_{cascade_level}", 
@@ -1309,28 +1397,30 @@ def main() -> None:
                 
                 for worker_key, worker_agent in worker_agents_dict.items():
                     print(f"{worker_key} - {worker_agent.model_id}")
-                
-                
+
+                cascade_total_cost = 0.0
                 # * STEP 4: Working Agents actions:
                 # * Generate initial responses
-                initial_answers: dict[str, AgentResponse] = asyncio.run(run_cascade_initial_answer(worker_agents=worker_agents_dict, 
+                initial_answers, init_cost = asyncio.run(run_cascade_initial_answer(worker_agents=worker_agents_dict,
                                                                                                    prompt_data=prompt_data, 
                                                                                                    current_level=current_cascade_level))
-                
+                cascade_total_cost += init_cost
+
                 # print(f"Question {idx}: {question_id} - {questions_mapping[question_id]}")
                 for agent_initial_answer in initial_answers.values():
                     print(f"\nAgent {agent_initial_answer.author_id}: \n\tResponse: {agent_initial_answer.content}")
 
                 # * Generate Critiques/Debate prompts
-                critiques: dict[str, AgentResponse] = asyncio.run(run_cascade_debate(worker_agents=worker_agents_dict, 
+                critiques, critique_cost = asyncio.run(run_cascade_debate(worker_agents=worker_agents_dict,
                                                                                      prev_answers=initial_answers, 
                                                                                      current_level=current_cascade_level))
+                cascade_total_cost += critique_cost
                 
                 for agent_critique in critiques.values():
                     print(f"\nAgent {agent_critique.author_id}: \n\tResponse: {agent_critique.content}")
 
                 # * Generate refined final answers based on previous initial answers and critiques
-                final_answers: dict[str, AgentResponse] = asyncio.run(
+                final_answers, refine_cost = asyncio.run(
                     run_cascade_refinement_loop(
                         worker_agents=worker_agents_dict, 
                         init_question=question_prompt,
@@ -1339,7 +1429,10 @@ def main() -> None:
                         current_level=current_cascade_level
                     )
                 )
-                
+                cascade_total_cost += refine_cost
+                mlflow.log_metric(f"cascade_lvl_{current_cascade_level}_cost", cascade_total_cost)
+                mlflow.log_metric("total_cost", cascade_total_cost)  # Update cumulative
+
                 for agent_final_answer in final_answers.values():
                     print(f"\nAgent {agent_final_answer.author_id}: \n\tResponse: {agent_final_answer.content}")
                 
@@ -1388,11 +1481,13 @@ def main() -> None:
                         question_prompt=original_question,
                         is_definitive=True,
                         acceptable_score=ACCEPTABLE_SCORE,
+
                         # TODO: Maybe try with best all previous answers. Engage memory of validator?
                         synthetized_answer=final_answers[validator_answer['evaluation']['best_answer']['best_worker_model_id']].content,
                         best_worker_model_id=cascade_lvl_models[validator_answer['evaluation']['best_answer']['best_worker_model_id']]['model_name'],
                         cascade_level=current_cascade_level,
                         best_confidence_score=validator_answer['evaluation']['best_answer']['best_confidence_score']
+                        ,total_cost=cascade_total_cost
                     )
                     
                     logger.success(f"Best answer ({validator_answer['evaluation']['best_answer']['best_confidence_score']}) was generated by: {validator_answer['evaluation']['best_answer']['best_worker_model_id']} at cascade level: {current_cascade_level}, with answer: {__format_response(long_string_log=final_answers[validator_answer['evaluation']['best_answer']['best_worker_model_id']].content)}.")
@@ -1427,8 +1522,8 @@ def main() -> None:
                     synthetized_answer=final_answers[validator_answer['evaluation']['best_answer']['best_worker_model_id']].content,
                     best_worker_model_id=cascade_lvl_models[validator_answer['evaluation']['best_answer']['best_worker_model_id']]['model_name'],
                     cascade_level=current_cascade_level,
-                    best_confidence_score=validator_answer['evaluation']['best_answer']['best_confidence_score']
-                )
+                    best_confidence_score=validator_answer['evaluation']['best_answer']['best_confidence_score'],
+                    total_cost=cascade_total_cost)
                 
                 next_cascade_prompt: str = ensemble_agents_answers(agents_answers=final_answers, 
                                                                    initial_question=question_prompt, 
@@ -1453,8 +1548,8 @@ def main() -> None:
                     synthetized_answer=final_answers[validator_answer['evaluation']['best_answer']['best_worker_model_id']].content,
                     best_worker_model_id=cascade_lvl_models[validator_answer['evaluation']['best_answer']['best_worker_model_id']]['model_name'],
                     cascade_level=current_cascade_level,
-                    best_confidence_score=validator_answer['evaluation']['best_answer']['best_confidence_score']
-                )
+                    best_confidence_score=validator_answer['evaluation']['best_answer']['best_confidence_score'],
+                    total_cost =cascade_total_cost)
                 
                 print(f"Synthetized final answer:\n{synthetized_final_answer}")
                 print(f"FINAL ANSWER (DIRECT FROM WORKER):\n{final_answers[validator_answer['evaluation']['best_answer']['best_worker_model_id']].content}")
