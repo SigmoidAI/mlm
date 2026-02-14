@@ -34,3 +34,5 @@ services:
       --default-artifact-root /opt/mlflow/artifacts
       --host 0.0.0.0
       --port 5000
+      --allowed-hosts "*"
+      --app-name basic-auth

@@ -712,6 +712,10 @@ async def run_cascade_initial_answer(worker_agents: dict[str, WorkingAgent], pro
 
 
     for response in results:
+
+        if isinstance(response, Exception):
+            logger.error(f"Agent failed with exception: {response}")
+            continue
         
         agent_id, response_content, cost = response
         total_cost += cost['total_cost']
@@ -794,6 +798,11 @@ async def run_cascade_debate(worker_agents: dict[str, WorkingAgent], prev_answer
     total_cost = 0.0
     
     for critique in critiques:
+
+        if isinstance(critique, Exception):
+            logger.error(f"Critique failed with exception: {critique}")
+            continue
+
         agent_id, critique_content, cost = critique
         total_cost += cost['total_cost']
         if not critique_content:
@@ -949,6 +958,10 @@ async def run_cascade_refinement_loop(worker_agents: dict[str, WorkingAgent],
     total_cost = 0.0
     
     for refinement_result in refinement_results:
+        if isinstance(refinement_result, Exception):
+            logger.error(f"Refinement failed with exception: {refinement_result}")
+            continue
+
         agent_id, refinement_result_content, cost = refinement_result
         total_cost += cost['total_cost']
         if not refinement_result_content:
