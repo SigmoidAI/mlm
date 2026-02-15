@@ -1430,7 +1430,11 @@ def main() -> None:
 
                 # print(f"Question {idx}: {question_id} - {questions_mapping[question_id]}")
                 for agent_initial_answer in initial_answers.values():
+                    if isinstance(agent_initial_answer, str):  # Skip 'N/A' entries
+                        continue
                     print(f"\nAgent {agent_initial_answer.author_id}: \n\tResponse: {agent_initial_answer.content}")
+
+                    #print(f"\nAgent {agent_initial_answer.author_id}: \n\tResponse: {agent_initial_answer.content}")
 
                 # * Generate Critiques/Debate prompts
                 critiques, critique_cost = asyncio.run(run_cascade_debate(worker_agents=worker_agents_dict,
@@ -1439,6 +1443,8 @@ def main() -> None:
                 cascade_total_cost += critique_cost
                 
                 for agent_critique in critiques.values():
+                    if isinstance(agent_critique, str):  # Skip 'N/A' entries
+                        continue
                     print(f"\nAgent {agent_critique.author_id}: \n\tResponse: {agent_critique.content}")
 
                 # * Generate refined final answers based on previous initial answers and critiques
@@ -1456,8 +1462,10 @@ def main() -> None:
                 mlflow.log_metric("total_cost", cascade_total_cost)  # Update cumulative
 
                 for agent_final_answer in final_answers.values():
+                    if isinstance(agent_final_answer, str):  # Skip 'N/A' entries
+                        continue
                     print(f"\nAgent {agent_final_answer.author_id}: \n\tResponse: {agent_final_answer.content}")
-                
+
                 # * STEP 5: Integrate Judge Agent to select the best final answer.
                 validator_prompt: str = ensemble_agents_answers(agents_answers=final_answers, 
                                                                 initial_question=question_prompt, 
