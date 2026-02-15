@@ -647,8 +647,13 @@ async def run_working_agent(worker_agent: tuple[str, WorkingAgent], func: Corout
     USAGE_TRACKER['last_cost'] = 0.0
     USAGE_TRACKER['last_input'] = 0
     USAGE_TRACKER['last_output'] = 0
-    
-    agent_answer: AgentResponse = await func(**func_kwargs)
+
+    try:
+        agent_answer: AgentResponse = await func(**func_kwargs)
+    except Exception as e:
+        logger.error(f"Agent {agent_id} failed with exception: {e}")
+        cost = {"input_cost": 0.0, "output_cost": 0.0, "total_cost": 0.0}
+        return (agent_id, None, cost)
 
     # Capture cost after call
     if USAGE_TRACKER['last_cost'] > 0:
