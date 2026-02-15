@@ -757,12 +757,16 @@ async def run_cascade_debate(worker_agents: dict[str, WorkingAgent], prev_answer
 
     tasks = []
     for agent_id, worker_agent in worker_agents.items():
+        if agent_id not in prev_answers or isinstance(prev_answers[agent_id], str):
+            logger.warning(f"Skipping {agent_id} - no valid answer to critique from")
+            continue
+
         logger.info(f"Attempting to generate critique response by agent: {agent_id} - {worker_agent.agent}")
         # print(f"{prev_answers[agent_id].author_id} - {agent_id}")
         individual_peer_responses: list[Prompt] = [
             Prompt(content=peer_response.content, model_tier="complex")
             for peer_id, peer_response in prev_answers.items()
-            if peer_id != agent_id
+            if peer_id != agent_id and not isinstance(peer_response, str)  # ADD THIS CHECK
         ]
         
         # print(
@@ -795,6 +799,10 @@ async def run_cascade_debate(worker_agents: dict[str, WorkingAgent], prev_answer
                 **func_kwargs
             )
         )
+
+    if not tasks:
+        logger.warning("No critique tasks created - all agents failed or had no peers")
+        return {}, 0.0
         
     logger.info(f"Executing {len(tasks)} critique tasks in parallel")
     critiques: list[tuple[str, AgentResponse, dict]] = await asyncio.gather(*tasks, return_exceptions=True)
