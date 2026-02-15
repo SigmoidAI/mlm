@@ -1476,28 +1476,34 @@ def main() -> None:
                                                                               answers=final_answers))
                 if not validator_answer:
                     logger.error('ValidatorAgent did not succeed. Falling back to default...')
-                    # first_answer = list(final_answers.values())[0] if final_answers else None
-    
 
-                    # individual_reviews = {}
-                    # for idx, _ in enumerate(final_answers.keys(), start=1):
-                    #     individual_reviews[f"worker_model_{idx}"] = {
-                    #         "confidence_score": 0.0,
-                    #         "reason": "N/A",
-                    #     }
-                    
-                    # validator_answer = {
-                    #     "evaluation": {
-                    #         "question": question_prompt,
-                    #         "best_answer": {
-                    #             "best_worker_model_id": first_answer.author_id if first_answer else "unknown",
-                    #             "best_confidence_score": 0.0,
-                    #             "best_reason": "N/A"    
-                    #         },
-                    #         "individual_reviews": individual_reviews
-                    #     }
-                    # }
-                
+                    # Get first successful answer or default
+                    first_valid = next((k for k, v in final_answers.items() if not isinstance(v, str)), None)
+
+                    if not first_valid:
+                        logger.error("No valid answers available. Skipping question.")
+                        break
+
+                    # Create fallback structure
+                    validator_answer = {
+                        "evaluation": {
+                            "question": question_prompt,
+                            "best_answer": {
+                                "best_worker_model_id": first_valid,
+                                "best_confidence_score": 0.0,
+                                "best_reason": "Judge failed - using first available answer"
+                            },
+                            "individual_reviews": {
+                                first_valid: {
+                                    "confidence_score": 0.0,
+                                    "reason": "Judge unavailable"
+                                }
+                            }
+                        }
+                    }
+                    logger.info(f"Using fallback answer from: {first_valid}")
+
+
                 if validator_answer['evaluation']['best_answer']['best_confidence_score'] >= ACCEPTABLE_SCORE:
                     # ANSWER GOOD
                     # TODO: Check how to update this method.
