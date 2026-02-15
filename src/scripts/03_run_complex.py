@@ -931,6 +931,10 @@ async def run_cascade_refinement_loop(worker_agents: dict[str, WorkingAgent],
     
     tasks = []
     for worker_id, worker_agent in worker_agents.items():
+        if worker_id not in init_answers or init_answers[worker_id] == 'N/A':
+            logger.warning(f"Skipping {worker_id} - no valid initial answer")
+            continue
+
         initial_answer: tuple[str, AgentResponse] = (worker_id, init_answers[worker_id])
         peers_critiques: dict[str, AgentResponse] = {peer_id: peer_critique for peer_id, peer_critique in critiques.items() if worker_id != peer_id}
 
