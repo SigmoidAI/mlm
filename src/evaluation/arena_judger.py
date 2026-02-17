@@ -10,6 +10,9 @@ from pydantic_ai.providers.openai import OpenAIProvider
 from openai import AsyncOpenAI
 import re
 from ..config.prompts import ARENA_HARD_JUDGE_PROMPT
+from ..config.make_config import make_config
+
+CASCADE_MODELS_CONFIG: dict[str, str] = make_config()
 
 # ==============================================================================
 # CONFIG
@@ -17,7 +20,7 @@ from ..config.prompts import ARENA_HARD_JUDGE_PROMPT
 
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-JUDGE_MODEL = "tngtech/deepseek-r1t2-chimera:free"
+JUDGE_MODEL = "google/gemini-2.5-flash"
 
 client = AsyncOpenAI(
     base_url="https://openrouter.ai/api/v1",
@@ -41,7 +44,7 @@ class ValidationResult(BaseModel):
 class ArenaValidatorAgent:
     def __init__(
             self,
-            model_name: str = "tngtech/deepseek-r1t2-chimera:free",  # Default model
+            model_name: str = "google/gemini-2.5-flash",  # Default model
             api_key: Optional[str] = None
     ):
         """

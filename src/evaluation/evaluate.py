@@ -8,17 +8,19 @@ import os
 import time
 
 from .arena_judger import ArenaValidatorAgent
+from ..config.make_config import make_config
 
 # ==============================================================================
 # CONFIGURATION
 # ==============================================================================
+CASCADE_MODELS_CONFIG: dict[str, str] = make_config()
 MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 if not OPENROUTER_API_KEY:
     raise ValueError("OPENROUTER_API_KEY is not set.")
 
-EXP_1_NAME = "GPT4o_v2"
-EXP_2_NAME = "GPT4o_v4"
+EXP_1_NAME = "Arena_Hard_GPT5_Traces"
+EXP_2_NAME = "complex_workflow_run_max_250_v19"
 COMPARISON_EXP_NAME = f"{EXP_1_NAME}_vs_{EXP_2_NAME}_Benchmark"
 
 # Arena Hard weighted scoring (matches the leaderboard methodology)
@@ -121,7 +123,7 @@ async def run_benchmark():
 
     # ── 4. Initialize judge ───────────────────────────────────────────────────
     validator = ArenaValidatorAgent(
-        model_name="tngtech/deepseek-r1t2-chimera:free",
+        model_name="google/gemini-2.5-flash",
         api_key=OPENROUTER_API_KEY
     )
 
@@ -150,17 +152,22 @@ async def run_benchmark():
             traces_b = extract_traces(client, run_id_b, exp_2_id)
 
             question_a = traces_a.iloc[0]["request"]["q"]
-            answer_a = traces_a.iloc[0]["response"]["content"]
+            answer_a = traces_a.iloc[0]["response"]["output"]
             trace_id_a = traces_a.iloc[0]["trace_id"]
 
-            question_b = traces_b.iloc[0]["request"]["q"]
-            answer_b = traces_b.iloc[0]["response"]["content"]
-            trace_id_b = traces_b.iloc[0]["trace_id"]
+            correct_traces = traces_b[traces_b["response"].apply(lambda r: "final_best_response" in r.keys())]
+
+            if not correct_traces.empty:
+                answer_b = correct_traces.iloc[0]["response"]["final_best_response"]
+                trace_id_b = correct_traces.iloc[0]["trace_id"]
+            else:
+                print(f"   ⚠️  Skipping: Could not extract question.")
+                continue
         except Exception as e:
             print(f"   ❌ Failed to extract traces for {run_name}: {e}")
             continue
 
-        question = question_a or question_b
+        question = question_a
         if not question:
             print(f"   ⚠️  Skipping: Could not extract question.")
             continue
@@ -222,7 +229,7 @@ async def run_benchmark():
                 "source_run_id_B": run_id_b,
                 "source_trace_id_A": str(trace_id_a),
                 "source_trace_id_B": str(trace_id_b),
-                "judge_model": "deepseek/deepseek-r1",
+                "judge_model": "google/gemini-2.5-flash",
                 # [CHANGED] Log the trace ID here
                 "judge_trace_id": str(judge_trace_id) if judge_trace_id else "N/A"
             })
@@ -320,7 +327,7 @@ async def run_benchmark():
             mlflow.log_params({
                 "model_A": EXP_1_NAME,
                 "model_B": EXP_2_NAME,
-                "judge_model": "deepseek/deepseek-r1",
+                "judge_model": "google/gemini-2.5-flash",
                 "total_questions": total,
                 "exp_1_id": exp_1_id,
                 "exp_2_id": exp_2_id,
