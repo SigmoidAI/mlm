@@ -597,7 +597,7 @@ def run_evaluation() -> None:
     # num_models = len(models)
     num_models = 2
     
-    exp_name = f"SimpleFlow_{num_models}Models"
+    exp_name = f"SimpleFlow_V2"
     exp_id, full_exp_name, version = create_versioned_experiment(exp_name)
     mlflow.set_experiment(full_exp_name)
     
@@ -617,7 +617,7 @@ def run_evaluation() -> None:
     num_questions = NUM_QUESTIONS if NUM_QUESTIONS > 0 else total_records
     
 
-    for idx, record in enumerate(RECORDS["records"][61:num_questions]):
+    for idx, record in enumerate(RECORDS["records"][:num_questions]):
         question = record["inputs"]["question"]
         question_id = record["inputs"]["question_id"]
         category = record["inputs"].get("category", "unknown")
