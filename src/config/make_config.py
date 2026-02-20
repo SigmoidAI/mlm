@@ -12,7 +12,7 @@ def _load_env() -> None:
 
     Dynamically searches for .env file location using find_dotenv() method. If no path was found, it falls back to default location at root directory of the project.
     """
-    dotenv_path: Optional[str] = find_dotenv(filename='.env')
+    dotenv_path: Optional[str] = find_dotenv(filename='.envfile')
     if not dotenv_path:
         logger.warning(".env file not found using built-in methods. Falling back to default location")
 

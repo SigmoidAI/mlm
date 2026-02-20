@@ -169,6 +169,7 @@ When evaluating take into consideration:
 4. Verify the output format matches any specified format
 5. Assess completeness - are all parts of the task done?
 6. Validate the quality of task execution
+7. Components used in solution are not outdated or deprecated
 
 Provide in individual reviews a reason/feedback why the answer was graded with that specific score. 
 Make sure these reasons/feedback are independent between other workers reviews.
@@ -228,7 +229,7 @@ COMPLEX_RUN_CONFIG_KEY: str = "cascade_complex_run"
 # JUDGE MODELS CONFIG
 JUDGE_MODELS_CONFIG_KEY: str = "judge_models"
 JUDGE_MODEL_KEY: str = "judge_model_1"  # ! CONFIGURABLE
-ACCEPTABLE_SCORE: float = 0.90  # ! CONFIGURABLE
+ACCEPTABLE_SCORE: float = 0.95  # ! CONFIGURABLE
 
 # CASCADE LEVEL
 MAX_CASCADE_LEVEL: int = 5  # ! CONFIGURABLE (1 <= value <= 5)
