@@ -182,19 +182,14 @@ async def run_benchmark():
             question_a = traces_a.iloc[0]["request"]["q"]
             answer_a = traces_a.iloc[0]["response"]["output"]
             trace_id_a = traces_a.iloc[0]["trace_id"]
-            gpt_cost_info = estimate_gpt_cost(question_a, answer_a)
 
-            correct_traces = traces_b[
-                traces_b["response"].apply(
-                    lambda r: isinstance(r, dict) and "final_best_answer" in r
-                )
-            ]
+            correct_traces = traces_b[traces_b["response"].apply(lambda r: "final_best_response" in r.keys())]
 
             if not correct_traces.empty:
-                answer_b   = correct_traces.iloc[0]["response"]["final_best_answer"]
+                answer_b = correct_traces.iloc[0]["response"]["final_best_response"]
                 trace_id_b = correct_traces.iloc[0]["trace_id"]
             else:
-                print(f"   ⚠️  Skipping: Could not extract answer from exp B.")
+                print(f"   ⚠️  Skipping: Could not extract question.")
                 continue
         except Exception as e:
             print(f"   ❌ Failed to extract traces for {run_name}: {e}")
