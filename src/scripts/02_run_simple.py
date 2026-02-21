@@ -446,8 +446,7 @@ def run_cascade(
 def run_evaluation() -> None:
     """Run simple flow evaluation on dataset."""
     models = load_models(MODEL_CONFIG_KEY)
-    # num_models = len(models)
-    num_models = 2
+    num_models = len(models)
     
     exp_name = f"SimpleFlow_{num_models}Models"
     exp_id, full_exp_name, version = create_versioned_experiment(exp_name)
