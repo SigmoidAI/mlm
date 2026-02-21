@@ -13,9 +13,22 @@ from pydantic_ai import Agent
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
-from ..config.prompts import VALIDATOR_SYSTEM_PROMPT
-from ..models.schemas import AgentResponse, Argument, Prompt, ValidationResult
-from .base import PydanticAIAgent
+import sys
+import os
+AGENTS_DIR = os.path.dirname(os.path.abspath(__file__))
+SRC_DIR = os.path.abspath(os.path.join(AGENTS_DIR, '..'))
+if SRC_DIR not in sys.path:
+    sys.path.insert(0, SRC_DIR)
+try:
+    from dotenv import load_dotenv
+    dotenv_path = os.path.join(SRC_DIR, '..', '.env')
+    if os.path.exists(dotenv_path):
+        load_dotenv(dotenv_path)
+except ImportError:
+    pass 
+from config.prompts import VALIDATOR_SYSTEM_PROMPT
+from models.schemas import AgentResponse, Argument, Prompt, ValidationResult
+from agents.base import PydanticAIAgent
 
 
 def get_openrouter_api_key() -> str:
@@ -308,6 +321,125 @@ class ValidatorAgent:
             self.threshold = new_config["threshold"]
 
 
+# ============================================================================== 
+# INTERN VALIDATOR AGENT
+# ============================================================================== 
+class InternValidatorAgent(ValidatorAgent):
+    """
+    InternValidatorAgent: Provides more detailed feedback for final answers and uses separate prompts for simple and creative tasks.
+    """
+    SIMPLE_PROMPT = (
+        "[User Prompt]\n{question}\n\n"
+        "[Model Response]\n{answer}\n\n"
+        "You are an internal judge. Please provide a detailed evaluation focusing on factual accuracy, clarity, and completeness. "
+        "Give specific, actionable feedback for improvement if needed."
+    )
+    CREATIVE_PROMPT = (
+        "[User Prompt]\n{question}\n\n"
+        "[Model Response]\n{answer}\n\n"
+        "You are an internal judge. Please provide a detailed evaluation focusing on originality, depth, and creativity. "
+        "Give specific, actionable feedback for improvement, highlighting strengths and weaknesses."
+    )
+
+    async def evaluate_simple(self, question: str, answer: str) -> Dict[str, Any]:
+        prompt = self.SIMPLE_PROMPT.format(question=question, answer=answer)
+        result = await self.judge_agent.run(prompt)
+        raw = result.data if hasattr(result, 'data') else str(result.output)
+        parsed = self._parse_json(raw)
+        feedback = self._generate_simple_feedback(parsed, question, answer)
+        parsed['feedback'] = feedback
+        self.memory.append({"type": "simple_evaluation", "question": question, **parsed})
+        return parsed
+
+    async def evaluate_creative(self, question: str, answer: str) -> Dict[str, Any]:
+        prompt = self.CREATIVE_PROMPT.format(question=question, answer=answer)
+        result = await self.judge_agent.run(prompt)
+        raw = result.data if hasattr(result, 'data') else str(result.output)
+        parsed = self._parse_json(raw)
+        feedback = self._generate_creative_feedback(parsed, question, answer)
+        parsed['feedback'] = feedback
+        self.memory.append({"type": "creative_evaluation", "question": question, **parsed})
+        return parsed
+
+    def _generate_simple_feedback(self, parsed: Dict[str, Any], question: str, answer: str) -> list:
+        feedback = []
+        if parsed.get('verdict') == 'Valid':
+            feedback.append(
+                "Excellent factual accuracy and clarity: The answer directly addresses the question, is precise, and covers all required details. Well-structured and easy to follow."
+            )
+        else:
+            feedback.append(
+                "Improvements needed: The answer is missing key facts, lacks clarity, or does not fully address the question. Please ensure all relevant information is included and presented in a logical, concise manner."
+            )
+        if 'reasoning' in parsed:
+            feedback.append(f"Evaluation reasoning: {parsed['reasoning'][:200]}")
+        if 'score' in parsed:
+            feedback.append(f"Evaluation score: {parsed['score']}")
+        feedback.append(
+            "Actionable tip: Use concrete examples, cite authoritative sources if possible, and double-check for completeness and accuracy."
+        )
+        return feedback
+
+    def _generate_creative_feedback(self, parsed: Dict[str, Any], question: str, answer: str) -> list:
+        feedback = []
+        if parsed.get('verdict') == 'Valid':
+            feedback.append(
+                "Outstanding creativity and depth: The answer is imaginative, offers fresh perspectives, and explores the topic in a thoughtful, engaging way. Strong use of vivid details or storytelling."
+            )
+        else:
+            feedback.append(
+                "Needs more creative development: The answer is too generic or lacks originality. Try to approach the topic from a new angle, add richer details, or use analogies and narrative elements to make it more compelling."
+            )
+        if 'reasoning' in parsed:
+            feedback.append(f"Evaluation reasoning: {parsed['reasoning'][:200]}")
+        if 'score' in parsed:
+            feedback.append(f"Evaluation score: {parsed['score']}")
+        feedback.append(
+            "Actionable tip: Experiment with unique ideas, draw connections to broader themes, and use descriptive language or examples to enhance engagement."
+        )
+        return feedback
+
+    async def evaluate(self, question: str, answer: str, creative: bool = False) -> Dict[str, Any]:
+        if creative:
+            return await self.evaluate_creative(question, answer)
+        else:
+            return await self.evaluate_simple(question, answer)
+
+    async def validate(self, responses: List[AgentResponse], creative: bool = False) -> ValidationResult:
+        avg_conf = sum(r.confidence for r in responses) / len(responses) if responses else 0.0
+        is_valid = avg_conf >= self.threshold
+        feedback = []
+        if creative:
+            if is_valid:
+                feedback.append(
+                    "Creative validation: The responses provided are highly original, demonstrate significant depth of thought, and show strong creativity. The answers go beyond the obvious, offering unique perspectives and well-developed ideas."
+                )
+            else:
+                feedback.append(
+                    "Creative validation: The responses lack sufficient originality or depth. To improve, encourage more imaginative thinking, provide richer details, and explore novel or unconventional ideas. Consider using analogies, storytelling, or vivid examples to make the answers stand out."
+                )
+        else:
+            if is_valid:
+                feedback.append(
+                    "Simple validation: The responses are factually accurate, clear, and address all aspects of the question. The answers are concise, well-structured, and easy to understand. Good use of relevant facts and logical reasoning."
+                )
+            else:
+                feedback.append(
+                    "Simple validation: The responses need improvement in factual accuracy, clarity, or completeness. To enhance the answers, ensure all key facts are correct, address every part of the question, and organize the information logically. Use specific examples or references where possible."
+                )
+        # Add detailed feedback for final answers
+        if responses:
+            best = max(responses, key=lambda x: x.confidence)
+            feedback.append(f"Best answer by: {best.author_id} | Confidence: {best.confidence}")
+            feedback.append(f"Best answer content: {best.content[:200]}")
+        return ValidationResult(
+            is_valid=is_valid,
+            score=avg_conf,
+            feedback=feedback,
+            refined_response=responses[0] if responses else None
+        )
+
+
 # ==============================================================================
 # TEST
 # ==============================================================================
@@ -316,7 +448,6 @@ if __name__ == "__main__":
         "Is there an early stop out method (to control for multiple testing problem "
         "in hypothesis tests) for a dataset with initial probabilities of passing?"
     )
-
     DUMMY_ANSWER_A = (
         "Yes. You can use the Bonferroni correction or the Benjamini-Hochberg procedure "
         "to control for multiple testing. The Bonferroni method divides your significance "
@@ -326,56 +457,154 @@ if __name__ == "__main__":
         "use sequential testing frameworks like alpha-spending functions (e.g., O'Brien-Fleming), "
         "which allow you to stop testing early if results are clearly significant or clearly not."
     )
-
     DUMMY_ANSWER_B = (
         "You can just run all your tests and see which ones pass. "
         "If too many fail, maybe try fewer strategies. "
         "There's no special method needed for this."
     )
 
-    async def main():
-        validator = ValidatorAgent(
+    SIMPLE_QUESTION = "What is the capital of France?"
+    SIMPLE_ANSWER_GOOD = "The capital of France is Paris."
+    SIMPLE_ANSWER_BAD = "France is a country in Europe."
+
+    CREATIVE_QUESTION = "Invent a new holiday and describe how people celebrate it."
+    CREATIVE_ANSWER_GOOD = (
+        "Dreamer's Day: On this holiday, people write down their wildest dreams and share them with friends. "
+        "Communities organize parades where everyone wears costumes representing their dreams. "
+        "At night, lanterns are released into the sky, symbolizing hopes taking flight."
+    )
+    CREATIVE_ANSWER_BAD = "People just stay home and do nothing."
+
+    # async def main():
+    #     validator = ValidatorAgent(
+    #         model_name="deepseek/deepseek-r1",
+    #         api_key=get_openrouter_api_key()
+    #     )
+    #
+    #     print("=" * 60)
+    #     print("TEST 1: Single evaluation (good answer)")
+    #     print("=" * 60)
+    #     result_single = await validator.evaluate_single(
+    #         question=DUMMY_QUESTION,
+    #         answer=DUMMY_ANSWER_A
+    #     )
+    #     print(f"Reasoning : {result_single.get('reasoning', '')[:200]}...")
+    #     print(f"Feedback  : {result_single.get('feedback', 'N/A')}")
+    #
+    #     print("\n" + "=" * 60)
+    #     print("TEST 2: Single evaluation (bad answer)")
+    #     print("=" * 60)
+    #     result_bad = await validator.evaluate_single(
+    #         question=DUMMY_QUESTION,
+    #         answer=DUMMY_ANSWER_B
+    #     )
+    #     print(f"Reasoning : {result_bad.get('reasoning', '')[:200]}...")
+    #     print(f"Feedback  : {result_bad.get('feedback', 'N/A')}")
+    #
+    #     print("\n" + "=" * 60)
+    #     print("TEST 3: Head-to-head comparison (A vs B)")
+    #     print("=" * 60)
+    #     result_compare = await validator.evaluate_comparison(
+    #         question=DUMMY_QUESTION,
+    #         answer_a=DUMMY_ANSWER_A,
+    #         answer_b=DUMMY_ANSWER_B
+    #     )
+    #     print(f"Reasoning : {result_compare.get('reasoning', '')[:200]}...")
+    #     print(f"Winner    : {result_compare.get('winner', 'N/A')}")
+    #
+    #     print("\n" + "=" * 60)
+    #     print("SUMMARY")
+    #     print("=" * 60)
+    #     print(f"Single (good) — verdict: {result_single.get('verdict')}, score: {result_single.get('score')}")
+    #     print(f"Single (bad)  — verdict: {result_bad.get('verdict')},  score: {result_bad.get('score')}")
+    #     print(f"Comparison    — verdict: {result_compare.get('verdict')}, winner: {result_compare.get('winner')}")
+    #     print(f"Total calls in memory: {len(validator.memory)}")
+    #
+    # asyncio.run(main())
+
+    async def intern_main():
+        intern_judge = InternValidatorAgent(
             model_name="deepseek/deepseek-r1",
             api_key=get_openrouter_api_key()
         )
 
         print("=" * 60)
-        print("TEST 1: Single evaluation (good answer)")
+        print("INTERN TEST 1: Simple evaluation (good answer)")
         print("=" * 60)
-        result_single = await validator.evaluate_single(
-            question=DUMMY_QUESTION,
-            answer=DUMMY_ANSWER_A
+        result_simple = await intern_judge.evaluate(
+            question=SIMPLE_QUESTION,
+            answer=SIMPLE_ANSWER_GOOD,
+            creative=False
         )
-        print(f"Reasoning : {result_single.get('reasoning', '')[:200]}...")
-        print(f"Feedback  : {result_single.get('feedback', 'N/A')}")
+        print(f"Reasoning : {result_simple.get('reasoning', '')[:200]}...")
+        print(f"Feedback  : {result_simple.get('feedback', 'N/A')}")
 
         print("\n" + "=" * 60)
-        print("TEST 2: Single evaluation (bad answer)")
+        print("INTERN TEST 2: Creative evaluation (good answer)")
         print("=" * 60)
-        result_bad = await validator.evaluate_single(
-            question=DUMMY_QUESTION,
-            answer=DUMMY_ANSWER_B
+        result_creative = await intern_judge.evaluate(
+            question=CREATIVE_QUESTION,
+            answer=CREATIVE_ANSWER_GOOD,
+            creative=True
         )
-        print(f"Reasoning : {result_bad.get('reasoning', '')[:200]}...")
-        print(f"Feedback  : {result_bad.get('feedback', 'N/A')}")
+        print(f"Reasoning : {result_creative.get('reasoning', '')[:200]}...")
+        print(f"Feedback  : {result_creative.get('feedback', 'N/A')}")
 
         print("\n" + "=" * 60)
-        print("TEST 3: Head-to-head comparison (A vs B)")
+        print("INTERN TEST 3: Simple evaluation (bad answer)")
         print("=" * 60)
-        result_compare = await validator.evaluate_comparison(
-            question=DUMMY_QUESTION,
-            answer_a=DUMMY_ANSWER_A,
-            answer_b=DUMMY_ANSWER_B
+        result_simple_bad = await intern_judge.evaluate(
+            question=SIMPLE_QUESTION,
+            answer=SIMPLE_ANSWER_BAD,
+            creative=False
         )
-        print(f"Reasoning : {result_compare.get('reasoning', '')[:200]}...")
-        print(f"Winner    : {result_compare.get('winner', 'N/A')}")
+        print(f"Reasoning : {result_simple_bad.get('reasoning', '')[:200]}...")
+        print(f"Feedback  : {result_simple_bad.get('feedback', 'N/A')}")
 
         print("\n" + "=" * 60)
-        print("SUMMARY")
+        print("INTERN TEST 4: Creative evaluation (bad answer)")
         print("=" * 60)
-        print(f"Single (good) — verdict: {result_single.get('verdict')}, score: {result_single.get('score')}")
-        print(f"Single (bad)  — verdict: {result_bad.get('verdict')},  score: {result_bad.get('score')}")
-        print(f"Comparison    — verdict: {result_compare.get('verdict')}, winner: {result_compare.get('winner')}")
-        print(f"Total calls in memory: {len(validator.memory)}")
+        result_creative_bad = await intern_judge.evaluate(
+            question=CREATIVE_QUESTION,
+            answer=CREATIVE_ANSWER_BAD,
+            creative=True
+        )
+        print(f"Reasoning : {result_creative_bad.get('reasoning', '')[:200]}...")
+        print(f"Feedback  : {result_creative_bad.get('feedback', 'N/A')}")
 
-    asyncio.run(main())
+        # Test validate() method with synthetic AgentResponse objects
+        print("\n" + "=" * 60)
+        print("INTERN TEST 5: validate() method (simple)")
+        print("=" * 60)
+        from models.schemas import AgentResponse
+        responses_simple = [
+            AgentResponse(author_id="A", content="Paris", confidence=0.9, arguments=[], metadata={}),
+            AgentResponse(author_id="B", content="Lyon", confidence=0.7, arguments=[], metadata={}),
+        ]
+        val_result_simple = await intern_judge.validate(responses_simple, creative=False)
+        print(f"is_valid: {val_result_simple.is_valid}")
+        print(f"score: {val_result_simple.score}")
+        print(f"feedback: {val_result_simple.feedback}")
+
+        print("\n" + "=" * 60)
+        print("INTERN TEST 6: validate() method (creative)")
+        print("=" * 60)
+        responses_creative = [
+            AgentResponse(author_id="A", content="Dreamer's Day", confidence=0.95, arguments=[], metadata={}),
+            AgentResponse(author_id="B", content="Stay Home Day", confidence=0.6, arguments=[], metadata={}),
+        ]
+        val_result_creative = await intern_judge.validate(responses_creative, creative=True)
+        print(f"is_valid: {val_result_creative.is_valid}")
+        print(f"score: {val_result_creative.score}")
+        print(f"feedback: {val_result_creative.feedback}")
+
+        print("\n" + "=" * 60)
+        print("INTERN SUMMARY")
+        print("=" * 60)
+        print(f"Simple (good)    — verdict: {result_simple.get('verdict')}, score: {result_simple.get('score')}")
+        print(f"Creative (good)  — verdict: {result_creative.get('verdict')}, score: {result_creative.get('score')}")
+        print(f"Simple (bad)     — verdict: {result_simple_bad.get('verdict')}, score: {result_simple_bad.get('score')}")
+        print(f"Creative (bad)   — verdict: {result_creative_bad.get('verdict')}, score: {result_creative_bad.get('score')}")
+        print(f"Total calls in memory: {len(intern_judge.memory)}")
+
+    asyncio.run(intern_main())
