@@ -19,8 +19,8 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 if not OPENROUTER_API_KEY:
     raise ValueError("OPENROUTER_API_KEY is not set.")
 
-EXP_1_NAME = "Arena_Hard_GPT5_Traces"
-EXP_2_NAME = "complex_workflow_run_max_250_v19"
+EXP_1_NAME = "Arena_Hard_GPT-4.1"
+EXP_2_NAME = "complex_workflow_run_max_100_v2"
 COMPARISON_EXP_NAME = f"{EXP_1_NAME}_vs_{EXP_2_NAME}_Benchmark"
 
 # Arena Hard weighted scoring (matches the leaderboard methodology)
@@ -137,6 +137,8 @@ async def run_benchmark():
 
     per_question_run_ids: List[str] = []
 
+    n_judged = 0
+
     for idx, run_name in enumerate(common_names, 1):
         print(f"\n[{idx}/{len(common_names)}] Judging: {run_name}")
 
@@ -155,7 +157,11 @@ async def run_benchmark():
             answer_a = traces_a.iloc[0]["response"]["output"]
             trace_id_a = traces_a.iloc[0]["trace_id"]
 
-            correct_traces = traces_b[traces_b["response"].apply(lambda r: "final_best_response" in r.keys())]
+            correct_traces = traces_b[
+                traces_b["response"].apply(
+                    lambda r: isinstance(r, dict) and "final_best_response" in r
+                )
+            ]
 
             if not correct_traces.empty:
                 answer_b = correct_traces.iloc[0]["response"]["final_best_response"]
@@ -185,32 +191,58 @@ async def run_benchmark():
             judge_start = time.time()
 
             # [CHANGED] Use the wrapper function to trigger tracing
-            validation = await execute_traced_judge(
+            validation_fwd = await execute_traced_judge(
                 validator,
                 question=question,
                 answer_a=answer_a,
                 answer_b=answer_b,
-                question_id=run_name
+                question_id=f"{run_name}_fwd"
             )
+
+            verdict_fwd = validation_fwd.get("verdict", "A=B")
+            reasoning_fwd = validation_fwd.get("reasoning", "")
+            score_fwd = ARENA_SCORE_MAP.get(verdict_fwd, 0.0)
+
+            verdict = verdict_fwd
+            reasoning = reasoning_fwd
+
+            validation_rev = await execute_traced_judge(
+                validator,
+                question=question,
+                answer_a=answer_b,  # swapped
+                answer_b=answer_a,
+                question_id=f"{run_name}_rev"
+            )
+
+
+
+            verdict_rev_raw = validation_rev.get("verdict", "A=B")
+            reasoning_rev = validation_rev.get("reasoning", "")
+            score_rev_raw = ARENA_SCORE_MAP.get(verdict_rev_raw, 0.0)
+
+            score_rev = -score_rev_raw
+
+            arena_score = (score_fwd + score_rev) / 2.0
+
+            judge_latency_s = time.time() - judge_start
 
             # [CHANGED] Capture the trace ID of the judge's execution
             judge_trace_id = mlflow.get_last_active_trace_id()
 
-            judge_latency_s = time.time() - judge_start
+            if arena_score > 0:
+                winner = EXP_1_NAME
+            elif arena_score < 0:
+                winner = EXP_2_NAME
+            else:
+                winner = "Tie"
 
-            verdict = validation.get("verdict", "A=B")
-            reasoning = validation.get("reasoning", "")
-            winner = verdict_to_winner(verdict)
-            arena_score = ARENA_SCORE_MAP.get(verdict, 0.0)
 
-            # Per-response scores: A gets the raw arena_score, B gets its mirror.
-            # e.g. verdict A>>B → A gets +1.0, B gets -1.0
             score_A = arena_score
             score_B = -arena_score
 
             cumulative_score_A += score_A
             cumulative_score_B += score_B
-            n_judged = idx  # idx is 1-based
+            n_judged += 1
 
             running_win_val_A = cumulative_score_A / n_judged
             running_win_val_B = cumulative_score_B / n_judged
@@ -236,24 +268,23 @@ async def run_benchmark():
 
             # --- Metrics (numeric, searchable, plottable) ----------------------
             mlflow.log_metrics({
-                # Per-question scores
-                "arena_score": arena_score,  # -1 … +1 weighted
+                # Official pairwise metrics
+                "arena_score_forward": score_fwd,
+                "arena_score_reverse": score_rev,
+                "arena_score_pairwise_avg": arena_score,
+
+                # Backward compatibility
+                "arena_score": arena_score,
+
                 "win_binary": 1 if winner == EXP_1_NAME else (-1 if winner == EXP_2_NAME else 0),
 
-                # Answer-length signals
                 "answer_length_A": len(answer_a),
                 "answer_length_B": len(answer_b),
-                "answer_length_ratio": len(answer_a) / max(len(answer_b), 1),
+                "reasoning_length_forward": len(reasoning_fwd),
+                "reasoning_length_reverse": len(reasoning_rev),
 
-                # Reasoning quality signal
-                "reasoning_length": len(reasoning),
-
-                # Latency
                 "judge_latency_s": round(judge_latency_s, 3),
 
-                # ★ Running win_val per response: sum(score_X) / n_judged
-                #   win_val_A tracks EXP_1, win_val_B tracks EXP_2.
-                #   win_val is their difference (A - B) — the head-to-head gap.
                 "win_val_A": round(running_win_val_A, 4),
                 "win_val_B": round(running_win_val_B, 4),
                 "win_val": round(running_win_val_A - running_win_val_B, 4),
@@ -263,7 +294,8 @@ async def run_benchmark():
             mlflow.log_text(question, "question.txt")
             mlflow.log_text(answer_a, "response_A.txt")
             mlflow.log_text(answer_b, "response_B.txt")
-            mlflow.log_text(reasoning, "reasoning.txt")
+            mlflow.log_text(reasoning_fwd, "reasoning_forward.txt")
+            mlflow.log_text(reasoning_rev, "reasoning_reverse.txt")
 
             # --- Feedback on the SOURCE traces (links judge verdict back) ------
             # This makes the verdict visible directly on the original experiment
@@ -316,7 +348,7 @@ async def run_benchmark():
         # Final per-response win_vals: A's scores sum to +X, B's to -X (mirrors)
         final_win_val_A = df["arena_score"].sum() / total
         final_win_val_B = -df["arena_score"].sum() / total
-        final_win_val = final_win_val_A - final_win_val_B  # head-to-head gap
+        final_win_val = final_win_val_A - final_win_val_B
 
         exp1_wins = len(df[df["winner"] == EXP_1_NAME])
         exp2_wins = len(df[df["winner"] == EXP_2_NAME])
