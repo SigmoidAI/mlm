@@ -21,7 +21,7 @@ if not OPENROUTER_API_KEY:
 
 EXP_1_NAME = "Arena_Hard_GPT-4.1"
 EXP_2_NAME = "complex_workflow_run_max_100_v2"
-COMPARISON_EXP_NAME = f"{EXP_1_NAME}_vs_{EXP_2_NAME}_Benchmark"
+COMPARISON_EXP_NAME = f"{EXP_1_NAME}_vs_{EXP_2_NAME}"
 
 # Arena Hard weighted scoring (matches the leaderboard methodology)
 ARENA_SCORE_MAP = {
@@ -31,6 +31,10 @@ ARENA_SCORE_MAP = {
     "B>A": -0.5,
     "B>>A": -1.0,
 }
+
+# GPT-4.1 cost: $2/1M input tokens, $8/1M output tokens
+GPT_IN_COST_PER_TOKEN  = 2.0 / 1_000_000
+GPT_OUT_COST_PER_TOKEN = 8.0 / 1_000_000
 
 
 # ==============================================================================
@@ -63,8 +67,27 @@ def verdict_to_winner(verdict: str) -> str:
     return "Tie"
 
 
+def estimate_gpt_cost(question: str, answer: str) -> Dict[str, float]:
+    """
+    Estimate GPT cost based on text length.
+    Approximation: 1 token ≈ 4 characters.
+    Input (question) at $2/1M tokens, Output (answer) at $8/1M tokens.
+    """
+    input_tokens  = len(question) // 4
+    output_tokens = len(answer)   // 4
+    total_tokens  = input_tokens + output_tokens
+    cost = input_tokens * GPT_IN_COST_PER_TOKEN + output_tokens * GPT_OUT_COST_PER_TOKEN
+
+    return {
+        "input_tokens":  input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens":  total_tokens,
+        "cost":          round(cost, 6),
+    }
+
+
 # ==============================================================================
-# TRACING WRAPPER (ADDED)
+# TRACING WRAPPER
 # ==============================================================================
 @mlflow.trace(name="arena_judge_evaluation", span_type="LLM")
 async def execute_traced_judge(validator, question, answer_a, answer_b, question_id):
@@ -72,7 +95,6 @@ async def execute_traced_judge(validator, question, answer_a, answer_b, question
     Wraps the validation step in an MLflow trace.
     This ensures inputs (answers) and outputs (verdict) are visible in the Traces tab.
     """
-    # Add context attributes to the trace for easy filtering later
     span = mlflow.get_current_active_span()
     if span:
         span.set_attributes({
@@ -81,7 +103,6 @@ async def execute_traced_judge(validator, question, answer_a, answer_b, question
             "model_B": EXP_2_NAME
         })
 
-    # Execute the actual judge
     return await validator.validate(
         question=question,
         answer_a=answer_a,
@@ -148,6 +169,11 @@ async def run_benchmark():
         run_id_a = run_a.info.run_id
         run_id_b = run_b.info.run_id
 
+        # ── Framework cost from OpenRouter hooks (logged on run_b) ───────────
+        # This is the actual cost reported by the OpenRouter API response hook,
+        # stored as a metric on the source experiment's run.
+        total_cost = run_b.data.metrics.get("total_cost", None)
+
         # ── Pull traces (contains request/response) ──────────────────────────
         try:
             traces_a = extract_traces(client, run_id_a, exp_1_id)
@@ -156,18 +182,19 @@ async def run_benchmark():
             question_a = traces_a.iloc[0]["request"]["q"]
             answer_a = traces_a.iloc[0]["response"]["output"]
             trace_id_a = traces_a.iloc[0]["trace_id"]
+            gpt_cost_info = estimate_gpt_cost(question_a, answer_a)
 
             correct_traces = traces_b[
                 traces_b["response"].apply(
-                    lambda r: isinstance(r, dict) and "final_best_response" in r
+                    lambda r: isinstance(r, dict) and "final_best_answer" in r
                 )
             ]
 
             if not correct_traces.empty:
-                answer_b = correct_traces.iloc[0]["response"]["final_best_response"]
+                answer_b   = correct_traces.iloc[0]["response"]["final_best_answer"]
                 trace_id_b = correct_traces.iloc[0]["trace_id"]
             else:
-                print(f"   ⚠️  Skipping: Could not extract question.")
+                print(f"   ⚠️  Skipping: Could not extract answer from exp B.")
                 continue
         except Exception as e:
             print(f"   ❌ Failed to extract traces for {run_name}: {e}")
@@ -181,16 +208,14 @@ async def run_benchmark():
             print(f"   ⚠️  Skipping: Missing answer (A={bool(answer_a)}, B={bool(answer_b)})")
             continue
 
-
         # ── Log everything into a per-question run ───────────────────────────
         with mlflow.start_run(run_name=run_name) as comparison_run:
             comparison_run_id = comparison_run.info.run_id
             per_question_run_ids.append(comparison_run_id)
 
-            # ── Judge ─────────────────────────────────────────────────────────────
+            # ── Judge (forward + reverse) ─────────────────────────────────────
             judge_start = time.time()
 
-            # [CHANGED] Use the wrapper function to trigger tracing
             validation_fwd = await execute_traced_judge(
                 validator,
                 question=question,
@@ -199,11 +224,11 @@ async def run_benchmark():
                 question_id=f"{run_name}_fwd"
             )
 
-            verdict_fwd = validation_fwd.get("verdict", "A=B")
+            verdict_fwd   = validation_fwd.get("verdict", "A=B")
             reasoning_fwd = validation_fwd.get("reasoning", "")
-            score_fwd = ARENA_SCORE_MAP.get(verdict_fwd, 0.0)
+            score_fwd     = ARENA_SCORE_MAP.get(verdict_fwd, 0.0)
 
-            verdict = verdict_fwd
+            verdict   = verdict_fwd
             reasoning = reasoning_fwd
 
             validation_rev = await execute_traced_judge(
@@ -214,20 +239,14 @@ async def run_benchmark():
                 question_id=f"{run_name}_rev"
             )
 
-
-
             verdict_rev_raw = validation_rev.get("verdict", "A=B")
-            reasoning_rev = validation_rev.get("reasoning", "")
-            score_rev_raw = ARENA_SCORE_MAP.get(verdict_rev_raw, 0.0)
+            reasoning_rev   = validation_rev.get("reasoning", "")
+            score_rev_raw   = ARENA_SCORE_MAP.get(verdict_rev_raw, 0.0)
+            score_rev       = -score_rev_raw
 
-            score_rev = -score_rev_raw
-
-            arena_score = (score_fwd + score_rev) / 2.0
-
+            arena_score     = (score_fwd + score_rev) / 2.0
             judge_latency_s = time.time() - judge_start
-
-            # [CHANGED] Capture the trace ID of the judge's execution
-            judge_trace_id = mlflow.get_last_active_trace_id()
+            judge_trace_id  = mlflow.get_last_active_trace_id()
 
             if arena_score > 0:
                 winner = EXP_1_NAME
@@ -235,7 +254,6 @@ async def run_benchmark():
                 winner = EXP_2_NAME
             else:
                 winner = "Tie"
-
 
             score_A = arena_score
             score_B = -arena_score
@@ -248,29 +266,33 @@ async def run_benchmark():
             running_win_val_B = cumulative_score_B / n_judged
 
             print(
-                f"   📊 Verdict: {verdict} → 🏆 {winner}  (arena={arena_score:+.1f} | win_val_A={running_win_val_A:+.3f} win_val_B={running_win_val_B:+.3f})")
+                f"   📊 Verdict: {verdict} → 🏆 {winner}  "
+                f"(arena={arena_score:+.1f} | win_val_A={running_win_val_A:+.3f} "
+                f"win_val_B={running_win_val_B:+.3f} | "
+                f"cost_est=${gpt_cost_info['cost']:.6f} | "
+                f"${f'{total_cost:.6f}' if total_cost is not None else 'N/A'}"
+            )
 
-            # --- Params (categorical / string metadata) -------------------------
+            # --- Params --------------------------------------------------------
             mlflow.log_params({
-                "question_id": run_name,
-                "model_A": EXP_1_NAME,
-                "model_B": EXP_2_NAME,
-                "verdict": verdict,
-                "winner": winner,
-                "source_run_id_A": run_id_a,
-                "source_run_id_B": run_id_b,
+                "question_id":       run_name,
+                "model_A":           EXP_1_NAME,
+                "model_B":           EXP_2_NAME,
+                "verdict":           verdict,
+                "winner":            winner,
+                "source_run_id_A":   run_id_a,
+                "source_run_id_B":   run_id_b,
                 "source_trace_id_A": str(trace_id_a),
                 "source_trace_id_B": str(trace_id_b),
-                "judge_model": "google/gemini-2.5-flash",
-                # [CHANGED] Log the trace ID here
-                "judge_trace_id": str(judge_trace_id) if judge_trace_id else "N/A"
+                "judge_model":       "google/gemini-2.5-flash",
+                "judge_trace_id":    str(judge_trace_id) if judge_trace_id else "N/A",
             })
 
-            # --- Metrics (numeric, searchable, plottable) ----------------------
+            # --- Metrics -------------------------------------------------------
             mlflow.log_metrics({
                 # Official pairwise metrics
-                "arena_score_forward": score_fwd,
-                "arena_score_reverse": score_rev,
+                "arena_score_forward":      score_fwd,
+                "arena_score_reverse":      score_rev,
                 "arena_score_pairwise_avg": arena_score,
 
                 # Backward compatibility
@@ -278,8 +300,17 @@ async def run_benchmark():
 
                 "win_binary": 1 if winner == EXP_1_NAME else (-1 if winner == EXP_2_NAME else 0),
 
-                "answer_length_A": len(answer_a),
-                "answer_length_B": len(answer_b),
+                # GPT cost — estimated (character-count heuristic)
+                "cost_generic":      gpt_cost_info["cost"],
+                "gpt_input_tokens":  gpt_cost_info["input_tokens"],
+                "gpt_output_tokens": gpt_cost_info["output_tokens"],
+                "gpt_total_tokens":  gpt_cost_info["total_tokens"],
+
+                # Framework cost — actual cost from OpenRouter response hook
+                "cost_framework": total_cost if total_cost is not None else 0.0,
+
+                "answer_length_A":          len(answer_a),
+                "answer_length_B":          len(answer_b),
                 "reasoning_length_forward": len(reasoning_fwd),
                 "reasoning_length_reverse": len(reasoning_rev),
 
@@ -287,19 +318,17 @@ async def run_benchmark():
 
                 "win_val_A": round(running_win_val_A, 4),
                 "win_val_B": round(running_win_val_B, 4),
-                "win_val": round(running_win_val_A - running_win_val_B, 4),
+                "win_val":   round(running_win_val_A - running_win_val_B, 4),
             })
 
-            # --- Artifacts (full text blobs) -----------------------------------
-            mlflow.log_text(question, "question.txt")
-            mlflow.log_text(answer_a, "response_A.txt")
-            mlflow.log_text(answer_b, "response_B.txt")
+            # --- Artifacts -----------------------------------------------------
+            mlflow.log_text(question,      "question.txt")
+            mlflow.log_text(answer_a,      "response_A.txt")
+            mlflow.log_text(answer_b,      "response_B.txt")
             mlflow.log_text(reasoning_fwd, "reasoning_forward.txt")
             mlflow.log_text(reasoning_rev, "reasoning_reverse.txt")
 
-            # --- Feedback on the SOURCE traces (links judge verdict back) ------
-            # This makes the verdict visible directly on the original experiment
-            # traces in the MLflow UI.
+            # --- Feedback on the SOURCE traces ---------------------------------
             for trace_id, source_exp, label in [
                 (trace_id_a, EXP_1_NAME, "A"),
                 (trace_id_b, EXP_2_NAME, "B"),
@@ -315,14 +344,15 @@ async def run_benchmark():
                             source_id=f"arena_judge_{COMPARISON_EXP_NAME}"
                         ),
                         metadata={
-                            "verdict": verdict,
-                            "winner": winner,
-                            "arena_score": arena_score,
-                            "opponent": EXP_2_NAME if label == "A" else EXP_1_NAME,
-                            "comparison_run_id": comparison_run_id,
-                            "question_id": run_name,
-                            # [CHANGED] Link back to the judge trace
-                            "judge_trace_id": str(judge_trace_id)
+                            "verdict":            verdict,
+                            "winner":             winner,
+                            "arena_score":        arena_score,
+                            "opponent":           EXP_2_NAME if label == "A" else EXP_1_NAME,
+                            "comparison_run_id":  comparison_run_id,
+                            "question_id":        run_name,
+                            "judge_trace_id":     str(judge_trace_id),
+                            "gpt_cost_estimated": gpt_cost_info["cost"],
+                            "gpt_cost_framework": total_cost if total_cost is not None else 0.0,
                         }
                     )
                 except Exception as e:
@@ -330,79 +360,81 @@ async def run_benchmark():
 
         # Accumulate for summary
         results.append({
-            "question_id": run_name,
-            "verdict": verdict,
-            "winner": winner,
-            "arena_score": arena_score,
-            "answer_length_A": len(answer_a),
-            "answer_length_B": len(answer_b),
-            "reasoning_length": len(reasoning),
-            "judge_latency_s": round(judge_latency_s, 3),
+            "question_id":        run_name,
+            "verdict":            verdict,
+            "winner":             winner,
+            "arena_score":        arena_score,
+            "answer_length_A":    len(answer_a),
+            "answer_length_B":    len(answer_b),
+            "reasoning_length":   len(reasoning),
+            "judge_latency_s":    round(judge_latency_s, 3),
+            "gpt_cost_estimated": gpt_cost_info["cost"],
+            "gpt_cost_framework": total_cost if total_cost is not None else 0.0,
         })
 
-    # ── 6. Parent summary run (one run that holds the final aggregates) ──────
+    # ── 6. Parent summary run ─────────────────────────────────────────────────
     if results:
         df = pd.DataFrame(results)
         total = len(df)
 
-        # Final per-response win_vals: A's scores sum to +X, B's to -X (mirrors)
         final_win_val_A = df["arena_score"].sum() / total
         final_win_val_B = -df["arena_score"].sum() / total
-        final_win_val = final_win_val_A - final_win_val_B
+        final_win_val   = final_win_val_A - final_win_val_B
 
         exp1_wins = len(df[df["winner"] == EXP_1_NAME])
         exp2_wins = len(df[df["winner"] == EXP_2_NAME])
-        ties = len(df[df["winner"] == "Tie"])
+        ties      = len(df[df["winner"] == "Tie"])
 
         with mlflow.start_run(run_name=f"SUMMARY_{EXP_1_NAME}_vs_{EXP_2_NAME}"):
-            # --- Params ----------------------------------------------------------
             mlflow.log_params({
-                "model_A": EXP_1_NAME,
-                "model_B": EXP_2_NAME,
-                "judge_model": "google/gemini-2.5-flash",
-                "total_questions": total,
-                "exp_1_id": exp_1_id,
-                "exp_2_id": exp_2_id,
+                "model_A":           EXP_1_NAME,
+                "model_B":           EXP_2_NAME,
+                "judge_model":       "google/gemini-2.5-flash",
+                "total_questions":   total,
+                "exp_1_id":          exp_1_id,
+                "exp_2_id":          exp_2_id,
                 "comparison_exp_id": comparison_exp_id,
             })
 
-            # --- Metrics ---------------------------------------------------------
             mlflow.log_metrics({
-                # ★ Final scores
-                "win_val": round(final_win_val, 4),
+                # Final scores
+                "win_val":   round(final_win_val, 4),
                 "win_val_A": round(final_win_val_A, 4),
                 "win_val_B": round(final_win_val_B, 4),
 
                 # Win counts & rates
-                f"{EXP_1_NAME}_wins": exp1_wins,
-                f"{EXP_2_NAME}_wins": exp2_wins,
-                "ties": ties,
+                f"{EXP_1_NAME}_wins":     exp1_wins,
+                f"{EXP_2_NAME}_wins":     exp2_wins,
+                "ties":                   ties,
                 f"{EXP_1_NAME}_win_rate": round(exp1_wins / total * 100, 2),
                 f"{EXP_2_NAME}_win_rate": round(exp2_wins / total * 100, 2),
-                "tie_rate": round(ties / total * 100, 2),
+                "tie_rate":               round(ties / total * 100, 2),
 
                 # Arena-score stats
-                "arena_score_sum": round(df["arena_score"].sum(), 4),
+                "arena_score_sum":  round(df["arena_score"].sum(), 4),
                 "arena_score_mean": round(df["arena_score"].mean(), 4),
-                "arena_score_min": float(df["arena_score"].min()),
-                "arena_score_max": float(df["arena_score"].max()),
+                "arena_score_min":  float(df["arena_score"].min()),
+                "arena_score_max":  float(df["arena_score"].max()),
 
                 # Answer-length stats
-                "avg_answer_length_A": round(df["answer_length_A"].mean(), 1),
-                "avg_answer_length_B": round(df["answer_length_B"].mean(), 1),
+                "avg_answer_length_A":  round(df["answer_length_A"].mean(), 1),
+                "avg_answer_length_B":  round(df["answer_length_B"].mean(), 1),
                 "avg_reasoning_length": round(df["reasoning_length"].mean(), 1),
 
                 # Latency
                 "total_judge_latency_s": round(df["judge_latency_s"].sum(), 2),
-                "avg_judge_latency_s": round(df["judge_latency_s"].mean(), 2),
+                "avg_judge_latency_s":   round(df["judge_latency_s"].mean(), 2),
+
+                # Cost summary — estimated (heuristic) vs framework (OpenRouter hooks)
+                "total_gpt_cost_estimated": round(df["gpt_cost_estimated"].sum(), 6),
+                "total_gpt_cost_framework": round(df["gpt_cost_framework"].sum(), 6),
+                "avg_gpt_cost_estimated":   round(df["gpt_cost_estimated"].mean(), 6),
+                "avg_gpt_cost_framework":   round(df["gpt_cost_framework"].mean(), 6),
             })
 
-            # --- Verdict distribution as individual metrics (shows as bar in UI) -
             for v in ARENA_SCORE_MAP:
                 mlflow.log_metric(f"verdict_{v}", int((df["verdict"] == v).sum()))
 
-            # --- Artifacts -------------------------------------------------------
-            # Full results CSV
             df.to_csv("benchmark_results.csv", index=False)
             mlflow.log_artifact("benchmark_results.csv")
             os.remove("benchmark_results.csv")
@@ -411,13 +443,17 @@ async def run_benchmark():
         print("\n" + "=" * 60)
         print(f"📊 BENCHMARK SUMMARY: {EXP_1_NAME} vs {EXP_2_NAME}")
         print("=" * 60)
-        print(f"   Questions judged  : {total}")
+        print(f"   Questions judged      : {total}")
         print(f"   win_val_A ({EXP_1_NAME}): {final_win_val_A:+.4f}")
         print(f"   win_val_B ({EXP_2_NAME}): {final_win_val_B:+.4f}")
-        print(f"   win_val (A − B)   : {final_win_val:+.4f}")
+        print(f"   win_val (A − B)       : {final_win_val:+.4f}")
         print(f"   {EXP_1_NAME:>12} wins : {exp1_wins:>3}  ({exp1_wins / total * 100:.1f}%)")
         print(f"   {'Ties':>12}      : {ties:>3}  ({ties / total * 100:.1f}%)")
         print(f"   {EXP_2_NAME:>12} wins : {exp2_wins:>3}  ({exp2_wins / total * 100:.1f}%)")
+        print(f"   Total cost (estimated): ${df['gpt_cost_estimated'].sum():.4f}")
+        print(f"   Total cost (framework): ${df['gpt_cost_framework'].sum():.4f}")
+        print(f"   Avg cost/q (estimated): ${df['gpt_cost_estimated'].mean():.6f}")
+        print(f"   Avg cost/q (framework): ${df['gpt_cost_framework'].mean():.6f}")
         print(f"\n🔗 View results: {MLFLOW_TRACKING_URI}/#/experiments")
     else:
         print("\n⚠️  No results produced.")
