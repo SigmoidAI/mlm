@@ -185,12 +185,12 @@ async def run_benchmark():
 
                 correct_traces = traces_b[
                     traces_b["response"].apply(
-                        lambda r: isinstance(r, dict) and "final_best_answer" in r
+                        lambda r: isinstance(r, dict) and "final_best_response" in r
                     )
                 ]
 
                 if not correct_traces.empty:
-                    answer_b   = correct_traces.iloc[0]["response"]["final_best_answer"]
+                    answer_b   = correct_traces.iloc[0]["response"]["final_best_response"]
                     trace_id_b = correct_traces.iloc[0]["trace_id"]
                 else:
                     print(f"   ⚠️  Skipping: Could not extract answer from exp B.")
