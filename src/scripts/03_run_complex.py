@@ -216,7 +216,7 @@ USER_PROMPT: str = {
 }
 
 # NUMBER OF QUESTIONS TO BE EVALUATED/ASKED TO THE CASCADE.
-NUM_MAX_QUESTIONS: int = 250  # ! CONFIGURABLE
+NUM_MAX_QUESTIONS: int = 10  # ! CONFIGURABLE
 
 # CASCADE MODELS CONFIG
 CASCADE_MODELS_CONFIG: dict[str, str] = make_config()
@@ -1304,12 +1304,25 @@ def main() -> None:
                                                              config_subclass_key=f"cascade_lvl_{current_cascade_level}")
                 print(json.dumps(cascade_lvl_models, indent=2))
                 
+                
+                # ! TEMP START 
+                # * CHANGE TEMPERATURE BASED ON QUESTION CATEGORY TYPE: hard_prompt = 0.2, creative_writing = 1.0
+                match question_category:
+                    case "hard_prompt":
+                        for  worker_model_conf in cascade_lvl_models.values():
+                            worker_model_conf["parameters"]["temperature"] = 0.2
+                    case "creative_writing":
+                        for worker_model_conf in cascade_lvl_models.values():
+                            worker_model_conf["parameters"]["temperature"] = 1.0
+                print(json.dumps(cascade_lvl_models, indent=2))
+                # ! TEMP END
+                
+                
                 # * Instantiate Agents using working models configs
                 worker_agents_dict: dict[str, WorkingAgent] = initialize_worker_agents(models_config=cascade_lvl_models, cascade_lvl=current_cascade_level)
                 
                 for worker_key, worker_agent in worker_agents_dict.items():
                     print(f"{worker_key} - {worker_agent.model_id}")
-                
                 
                 # * STEP 4: Working Agents actions:
                 # * Generate initial responses
