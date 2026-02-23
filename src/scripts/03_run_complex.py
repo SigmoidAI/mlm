@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import json
 import os
+import random
 import re
 import tempfile
 import uuid
@@ -1306,14 +1307,14 @@ def main() -> None:
                 
                 
                 # ! TEMP START 
-                # * CHANGE TEMPERATURE BASED ON QUESTION CATEGORY TYPE: hard_prompt = 0.2, creative_writing = 1.0
+                # * CHANGE TEMPERATURE BASED ON QUESTION CATEGORY TYPE: random from range (0.3-0.7) x2 (0.6-1.4) when creative
                 match question_category:
                     case "hard_prompt":
-                        for  worker_model_conf in cascade_lvl_models.values():
-                            worker_model_conf["parameters"]["temperature"] = 0.2
+                        for worker_model_conf in cascade_lvl_models.values():
+                            worker_model_conf["parameters"]["temperature"] = random.uniform(0.3, 0.7)
                     case "creative_writing":
                         for worker_model_conf in cascade_lvl_models.values():
-                            worker_model_conf["parameters"]["temperature"] = 1.0
+                            worker_model_conf["parameters"]["temperature"] = random.uniform(0.6, 1.4)
                 print(json.dumps(cascade_lvl_models, indent=2))
                 # ! TEMP END
                 
