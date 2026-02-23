@@ -104,6 +104,8 @@ class ArenaValidatorAgent:
         if json_match:
             try:
                 data = json.loads(json_match.group(1))
+                if isinstance(data, list):
+                    data = data[0] if data and isinstance(data[0], dict) else {}
                 return ValidationResult(
                     verdict=data.get("verdict", "[[A=B]]"),
                     reasoning=data.get("reasoning", raw_text)
