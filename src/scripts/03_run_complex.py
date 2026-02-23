@@ -1311,10 +1311,10 @@ def main() -> None:
                 match question_category:
                     case "hard_prompt":
                         for worker_model_conf in cascade_lvl_models.values():
-                            worker_model_conf["parameters"]["temperature"] = random.uniform(0.3, 0.7)
+                            worker_model_conf["parameters"]["temperature"] = round(random.uniform(0.3, 0.7), 2)
                     case "creative_writing":
                         for worker_model_conf in cascade_lvl_models.values():
-                            worker_model_conf["parameters"]["temperature"] = random.uniform(0.6, 1.4)
+                            worker_model_conf["parameters"]["temperature"] = round(random.uniform(0.6, 1.4), 2)
                 print(json.dumps(cascade_lvl_models, indent=2))
                 # ! TEMP END
                 
