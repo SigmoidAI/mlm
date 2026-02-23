@@ -8,11 +8,12 @@ import os
 import time
 
 from .arena_judger import ArenaValidatorAgent
-from ..config.make_config import make_config
+from ..config.make_config import make_config,_load_env
 
 # ==============================================================================
 # CONFIGURATION
 # ==============================================================================
+_load_env()
 CASCADE_MODELS_CONFIG: dict[str, str] = make_config()
 MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
