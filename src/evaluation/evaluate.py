@@ -19,8 +19,9 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 if not OPENROUTER_API_KEY:
     raise ValueError("OPENROUTER_API_KEY is not set.")
 
-EXP_1_NAME = "Arena_Hard_GPT-4.1"
-EXP_2_NAME = "complex_workflow_run_max_100_v2"
+EXP_1_NAME = os.getenv("BENCHMARK_NAME_1","Arena_Hard_GPT-4.1")
+EXP_2_NAME = os.getenv("BENCHMARK_NAME_2","complex_workflow_run_max_100_v2")
+
 COMPARISON_EXP_NAME = f"{EXP_1_NAME}_vs_{EXP_2_NAME}"
 
 # Arena Hard weighted scoring (matches the leaderboard methodology)
