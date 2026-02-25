@@ -20,6 +20,14 @@ from .base import PydanticAIAgent
 
 def get_openrouter_api_key() -> str:
     """Get OPENROUTER_API_KEY from environment, raise if not set."""
+    # Ensure dotenv is loaded before reading the key
+    try:
+        from dotenv import load_dotenv
+        dotenv_path = os.path.join(os.path.dirname(__file__), '..', '..', '.env')
+        if os.path.exists(dotenv_path):
+            load_dotenv(dotenv_path)
+    except ImportError:
+        pass
     key = os.getenv("OPENROUTER_API_KEY")
     if not key:
         raise ValueError("OPENROUTER_API_KEY is not set.")
@@ -307,6 +315,110 @@ class ValidatorAgent:
         if "threshold" in new_config:
             self.threshold = new_config["threshold"]
 
+# ============================================================================== 
+# INTERNAL VALIDATOR 
+# ============================================================================== 
+class InternalValidator:
+    """
+    InternalValidator: Selects the best response, determines type (creative/coding),
+    generates LLM feedback with 10 parameters (5 specific, 5 common), and returns best answer and structured feedback.
+    """
+    def __init__(self, judge_agent):
+        self.judge_agent = judge_agent
+
+    async def validate(self, responses: List['AgentResponse'], category: str = "creative") -> Dict[str, Any]:
+        """
+        Validate a list of AgentResponse objects (as produced by ValidatorAgent).
+        Args:
+            responses: List[AgentResponse] - must be AgentResponse objects (not dicts).
+            category: 'creative' or 'coding' - determines parameter set.
+        Returns:
+            Dict with keys: is_valid, score, feedback, refined_response.
+        """
+        # Input validation
+        if not isinstance(responses, list) or not all(hasattr(r, 'confidence') and hasattr(r, 'content') for r in responses):
+            return {
+                "is_valid": False,
+                "score": 0.0,
+                "feedback": ["Input must be a list of AgentResponse objects from ValidatorAgent."],
+                "refined_response": None
+            }
+        if not responses:
+            return {
+                "is_valid": False,
+                "score": 0.0,
+                "feedback": ["No responses provided."],
+                "refined_response": None
+            }
+        best = max(responses, key=lambda x: x.confidence)
+        is_valid = best.confidence >= 0.9
+
+        common_parameters = [
+            "clarity", "structure", "relevance", "engagement", "use_of_examples"
+        ]
+        if category == "coding":
+            specific_parameters = [
+                "correctness", "efficiency", "readability", "use_of_libraries", "library_freshness",
+                "error_handling", "scalability", "documentation", "test_coverage", "code_style"
+            ]
+        else:
+            specific_parameters = [
+                "originality", "imagination", "emotional_impact", "storytelling", "vividness",
+                "creativity", "depth", "novelty", "expressiveness", "risk_taking"
+            ]
+        parameters = specific_parameters + common_parameters
+
+        analysis_prompt = (
+            f"You are an internal judge. Analyze the following answer for these parameters: {', '.join(parameters)}.\n"
+            f"For each parameter, provide a score from 1 to 10 (10 is best) and a brief comment.\n"
+            f"Then provide an in-depth overall feedback (at least 3 sentences).\n"
+            f"Return a JSON object with the following structure:\n"
+            f"{{\n  'parameter_scores': {{'param': {{'score': int, 'comment': str}}, ...}},\n  'overall_feedback': str\n}}\n"
+            f"Answer: {best.content}"
+        )
+
+        result = await self.judge_agent.run(analysis_prompt)
+        raw = result.data if hasattr(result, 'data') else str(result.output)
+        try:
+            parsed = self._parse_json(raw)
+        except Exception:
+            parsed = {"parameter_scores": {}, "overall_feedback": raw, "improvement_suggestions": []}
+        # Ensure all keys exist
+        if "parameter_scores" not in parsed:
+            parsed["parameter_scores"] = {}
+        if "overall_feedback" not in parsed:
+            parsed["overall_feedback"] = ""
+
+        feedback = [
+            f"Best answer by: {best.author_id} | Confidence: {best.confidence}",
+            f"Best answer content: {best.content[:200]}",
+            f"Parameter scores: {parsed['parameter_scores']}",
+            f"Overall feedback: {parsed['overall_feedback']}"
+        ]
+
+        return {
+            "is_valid": is_valid,
+            "score": best.confidence,
+            "feedback": feedback,
+            "refined_response": best
+        }
+
+    def _parse_json(self, raw_text: str) -> Dict[str, Any]:
+        import re, json_repair
+        match = re.search(r'```(?:json)?\s*(.*?)\s*```', raw_text, re.DOTALL)
+        if match:
+            try:
+                return json_repair.loads(match.group(1))
+            except Exception:
+                pass
+        start = raw_text.find('{')
+        end = raw_text.rfind('}')
+        if start != -1 and end != -1:
+            try:
+                return json_repair.loads(raw_text[start:end + 1])
+            except Exception:
+                pass
+        return {"reasoning": raw_text, "verdict": "Unknown", "score": 0.0}
 
 # ==============================================================================
 # TEST
@@ -378,4 +490,67 @@ if __name__ == "__main__":
         print(f"Comparison    — verdict: {result_compare.get('verdict')}, winner: {result_compare.get('winner')}")
         print(f"Total calls in memory: {len(validator.memory)}")
 
-    asyncio.run(main())
+    # asyncio.run(main())
+
+    print("\n" + "=" * 60)
+    print("INTERNAL VALIDATOR TESTS")
+    print("=" * 60)
+
+    async def internal_validator_tests():
+        judge_agent = Agent(
+            OpenAIChatModel("deepseek/deepseek-r1", provider=OpenAIProvider(openai_client=AsyncOpenAI(base_url="https://openrouter.ai/api/v1", api_key=get_openrouter_api_key()))),
+            system_prompt=VALIDATOR_SYSTEM_PROMPT
+        )
+        internal_validator = InternalValidator(judge_agent)
+
+        # Coding responses
+        coding_responses = [
+            AgentResponse(author_id="CoderA", content="import numpy as np\narr = np.array([1,2,3])\nprint(arr)", confidence=0.92, arguments=[], metadata={}),
+            AgentResponse(author_id="CoderB", content="import numpy\nprint(numpy.array([1,2,3]))", confidence=0.75, arguments=[], metadata={}),
+        ]
+        print("\nINTERNAL TEST 1: Coding (good answer)")
+        result_coding = await internal_validator.validate(coding_responses, category="coding")
+        print(f"is_valid: {result_coding['is_valid']}")
+        print(f"score: {result_coding['score']}")
+        print(f"feedback: {result_coding['feedback']}")
+
+        # Creative responses
+        creative_responses = [
+            AgentResponse(author_id="CreativeA", content="A festival where everyone paints their dreams on giant canvases in the city square.", confidence=0.88, arguments=[], metadata={}),
+            AgentResponse(author_id="CreativeB", content="People just eat cake.", confidence=0.6, arguments=[], metadata={}),
+        ]
+        print("\nINTERNAL TEST 2: Creative (good answer)")
+        result_creative = await internal_validator.validate(creative_responses, category="creative")
+        print(f"is_valid: {result_creative['is_valid']}")
+        print(f"score: {result_creative['score']}")
+        print(f"feedback: {result_creative['feedback']}")
+
+        # Edge case: No responses
+        print("\nINTERNAL TEST 3: No responses")
+        result_none = await internal_validator.validate([], category="coding")
+        print(f"is_valid: {result_none['is_valid']}")
+        print(f"score: {result_none['score']}")
+        print(f"feedback: {result_none['feedback']}")
+
+        # Edge case: All responses invalid (low confidence)
+        low_conf_coding = [
+            AgentResponse(author_id="CoderA", content="import numpy as np\narr = np.array([1,2,3])\nprint(arr)", confidence=0.5, arguments=[], metadata={}),
+            AgentResponse(author_id="CoderB", content="import numpy\nprint(numpy.array([1,2,3]))", confidence=0.4, arguments=[], metadata={}),
+        ]
+        print("\nINTERNAL TEST 4: Coding (all invalid)")
+        result_low_coding = await internal_validator.validate(low_conf_coding, category="coding")
+        print(f"is_valid: {result_low_coding['is_valid']}")
+        print(f"score: {result_low_coding['score']}")
+        print(f"feedback: {result_low_coding['feedback']}")
+
+        low_conf_creative = [
+            AgentResponse(author_id="CreativeA", content="A festival where everyone paints their dreams on giant canvases in the city square.", confidence=0.3, arguments=[], metadata={}),
+            AgentResponse(author_id="CreativeB", content="People just eat cake.", confidence=0.2, arguments=[], metadata={}),
+        ]
+        print("\nINTERNAL TEST 5: Creative (all invalid)")
+        result_low_creative = await internal_validator.validate(low_conf_creative, category="creative")
+        print(f"is_valid: {result_low_creative['is_valid']}")
+        print(f"score: {result_low_creative['score']}")
+        print(f"feedback: {result_low_creative['feedback']}")
+
+    asyncio.run(internal_validator_tests())
