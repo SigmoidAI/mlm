@@ -1414,7 +1414,7 @@ def main() -> None:
                 })
                 prompt_data: tuple[str, str] = (question_id, question_prompt)
 
-                for current_cascade_level in range(1, MAX_CASCADE_LEVEL + 1):
+                for current_cascade_level in range(5, MAX_CASCADE_LEVEL + 1):
                     logger.info(f"Entering cascade level {current_cascade_level}.")
 
                     # * STEP 3: Configuring Agents
