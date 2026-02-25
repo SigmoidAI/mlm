@@ -16,32 +16,6 @@
 # SIMPLE FLOW (SINGLE MODEL APPROACH)
 simple_flow:
   worker_model_1:
-    model_name: meta-llama/llama-3.1-8b-instruct   # 8B | $0.02 in / $0.05 out
-    short_model_name: Llama 3.1 8B
-    endpoint:
-      api_base_url: https://openrouter.ai/api/v1
-      api_key: ${OPENROUTER_API_KEY}
-    pricing:
-      input: 0.02
-      output: 0.05
-    parameters:
-      max_tokens: 8192
-      temperature: 0.5
-
-  worker_model_2:
-    model_name: mistralai/mistral-small-3.2-24b-instruct  # 24B
-    short_model_name: Mistral Small 3.2 24B
-    endpoint:
-      api_base_url: https://openrouter.ai/api/v1
-      api_key: ${OPENROUTER_API_KEY}
-    pricing:
-      input: 0.06
-      output: 0.18
-    parameters:
-      max_tokens: 8192
-      temperature: 0.5
-
-  worker_model_3:
     model_name: qwen/qwen3-32b        # 32B
     short_model_name: Qwen 3 32B
     endpoint:
@@ -54,9 +28,9 @@ simple_flow:
       max_tokens: 8192
       temperature: 0.5
 
-  worker_model_4:
-    model_name: meta-llama/llama-3.1-70b-instruct  # 70B
-    short_model_name: Llama 3.1 70B
+  worker_model_2:
+    model_name: deepseek/deepseek-v3.2  # 70B
+    short_model_name: DeepSeek V3.2
     endpoint:
       api_base_url: https://openrouter.ai/api/v1
       api_key: ${OPENROUTER_API_KEY}
@@ -67,7 +41,7 @@ simple_flow:
       max_tokens: 8192
       temperature: 0.5
 
-  worker_model_5:
+  worker_model_3:
     model_name: deepseek/deepseek-chat-v3.1
     short_model_name: DeepSeek V3.1
     endpoint:

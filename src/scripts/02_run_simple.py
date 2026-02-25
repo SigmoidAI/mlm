@@ -78,7 +78,7 @@ MODEL_CONFIG_KEY: str = "simple_flow"
 JUDGE_MODEL_KEY: str = "judge_model_1"  # Options: judge_model_1, judge_model_2, judge_model_3
 
 # Evaluation Thresholds
-ACCEPTABLE_SCORE: float = 0.9
+ACCEPTABLE_SCORE: float = 0.92
 
 # Prompt Templates
 SYSTEM_PROMPT: str = "You are a helpful AI assistant. Provide detailed, accurate answers."
