@@ -16,10 +16,8 @@
 # SIMPLE FLOW (SINGLE MODEL APPROACH)
 simple_flow:
   worker_model_1:
-    # model_name: ibm-granite/granite-4.0-h-micro  # 3 Bil. | 0.017 (input) | 0.11 (output)
-    model_name: meta-llama/llama-3.1-8b-instruct  # 8 Bil. | 0.02 (input) | 0.05 (output)
-    # model_name: openrouter/free  # DEBUG
-    short_model_name: Llama 3.1 8B Instruct
+    model_name: meta-llama/llama-3.1-8b-instruct   # 8B | $0.02 in / $0.05 out
+    short_model_name: Llama 3.1 8B
     endpoint:
       api_base_url: https://openrouter.ai/api/v1
       api_key: ${OPENROUTER_API_KEY}
@@ -29,34 +27,22 @@ simple_flow:
     parameters:
       max_tokens: 8192
       temperature: 0.5
+
   worker_model_2:
-    # model_name: google/gemma-3-12b-it  # 12 Bil. | 0.03 (input) | 0.10 (output)
-    model_name: microsoft/phi-4  # 14 Bil. | 0.06 (input) | 0.14 (output)  
-    # model_name: openrouter/free  # DEBUG
-    short_model_name: Microsoft Phi-4
+    model_name: mistralai/mistral-small-3.2-24b-instruct  # 24B
+    short_model_name: Mistral Small 3.2 24B
     endpoint:
       api_base_url: https://openrouter.ai/api/v1
       api_key: ${OPENROUTER_API_KEY}
     pricing:
       input: 0.06
-      output: 0.14
+      output: 0.18
     parameters:
       max_tokens: 8192
       temperature: 0.5
+
   worker_model_3:
-    model_name: qwen/qwen3-14b  # 14.8 Bil. | 0.05 (input) | 0.22 (output)
-    short_model_name: Qwen 3 14B
-    endpoint:
-      api_base_url: https://openrouter.ai/api/v1
-      api_key: ${OPENROUTER_API_KEY}
-    pricing:
-      input: 0.05
-      output: 0.22
-    parameters:
-      max_tokens: 8192
-      temperature: 0.5
-  worker_model_4:
-    model_name: qwen/qwen3-32b  # 32 Bil. | 0.08 (input) | 0.24 (output)
+    model_name: qwen/qwen3-32b        # 32B
     short_model_name: Qwen 3 32B
     endpoint:
       api_base_url: https://openrouter.ai/api/v1
@@ -67,27 +53,41 @@ simple_flow:
     parameters:
       max_tokens: 8192
       temperature: 0.5
-  worker_model_5:
-    model_name: nvidia/llama-3.3-nemotron-super-49b-v1.5  # 49 Bil. | 0.10 (input) | 0.40 (output)
-    short_model_name: NVIDIA Llama 3.3 Nemotron Super 49B v1.5
+
+  worker_model_4:
+    model_name: meta-llama/llama-3.1-70b-instruct  # 70B
+    short_model_name: Llama 3.1 70B
     endpoint:
       api_base_url: https://openrouter.ai/api/v1
       api_key: ${OPENROUTER_API_KEY}
     pricing:
       input: 0.10
-      output: 0.40
+      output: 0.32
     parameters:
       max_tokens: 8192
       temperature: 0.5
+
+  worker_model_5:
+    model_name: deepseek/deepseek-chat-v3.1
+    short_model_name: DeepSeek V3.1
+    endpoint:
+      api_base_url: https://openrouter.ai/api/v1
+      api_key: ${OPENROUTER_API_KEY}
+    pricing:
+      input: 0.15
+      output: 0.75
+    parameters:
+      max_tokens: 8192
+      temperature: 0.5
+
 
 # CASCADE MODELS
 cascade_complex_run:
   # CASCADE LEVEL 1 - 2 worker models
   cascade_lvl_1:
     worker_model_1:
-      model_name: meta-llama/llama-3.1-8b-instruct  # 8 Bil. | 0.02 (input) | 0.05 (output)
-      # model_name: openrouter/free  # DEBUG
-      short_model_name: Llama 3.1 8B Instruc
+      model_name: mistralai/mistral-small-3.2-24b-instruct  # 24 Bil. | 0.06 (input) | 0.18 (output)
+      short_model_name: Mistral Small 3.2 24B (Leader)
       endpoint:
         api_base_url: https://openrouter.ai/api/v1
         api_key: ${OPENROUTER_API_KEY}
@@ -99,9 +99,8 @@ cascade_complex_run:
         temperature: 0.5
     worker_model_2:
       # model_name: nvidia/nemotron-nano-9b-v2  # 9 Bil. | 0.04 (input) | 0.16 (output)
-      model_name: ibm-granite/granite-4.0-h-micro  # 3 Bil. | 0.017 (input) | 0.11 (output)
-      # model_name: openrouter/free  # DEBUG
-      short_model_name: IBM Granite 4.0 H Micro
+      model_name: meta-llama/llama-3.1-8b-instruct  # 8 Bil. | 0.02 (input) | 0.05 (output)
+      short_model_name: Llama 3.1 8B
       endpoint:
         api_base_url: https://openrouter.ai/api/v1
         api_key: ${OPENROUTER_API_KEY}
@@ -115,8 +114,8 @@ cascade_complex_run:
   # CASCADE LEVEL 2 - 3 worker models
   cascade_lvl_2:
     worker_model_1:
-      model_name: qwen/qwen3-14b  # 14.8 Bil. | 0.05 (input) | 0.22 (output)
-      short_model_name: Qwen 3 14B
+      model_name: deepseek/deepseek-v3.2 # 32 Bil. | 0.10 (input) | 0.30 (output)
+      short_model_name: deepseek/deepseek-v3.2 32B (Leader)
       endpoint:
         api_base_url: https://openrouter.ai/api/v1
         api_key: ${OPENROUTER_API_KEY}
@@ -127,8 +126,8 @@ cascade_complex_run:
         max_tokens: 8192
         temperature: 0.5
     worker_model_2:
-      model_name: microsoft/phi-4  # 14 Bil. | 0.06 (input) | 0.14 (output)  
-      short_model_name: Microsoft Phi-4
+      model_name: mistralai/mistral-small-3.2-24b-instruct  # 24 Bil. | 0.06 (input) | 0.18 (output)
+      short_model_name: Mistral Small 3.2 24B
       endpoint:
         api_base_url: https://openrouter.ai/api/v1
         api_key: ${OPENROUTER_API_KEY}
@@ -139,8 +138,8 @@ cascade_complex_run:
         max_tokens: 8192
         temperature: 0.5
     worker_model_3:
-      model_name: google/gemma-3-12b-it  # 12 Bil. | 0.03 (input) | 0.10 (output)
-      short_model_name: Google Gemma 3 12B
+      model_name: google/gemma-3-27b-it  # 27 Bil. | 0.04 (input) | 0.15 (output)
+      short_model_name: Google Gemma 3 27B
       endpoint:
         api_base_url: https://openrouter.ai/api/v1
         api_key: ${OPENROUTER_API_KEY}
@@ -154,8 +153,8 @@ cascade_complex_run:
   # CASCADE LEVEL 3 - 3 stronger worker models
   cascade_lvl_3:
     worker_model_1:
-      model_name: openai/gpt-oss-20b  # 21 Bil. | 0.02 (input) | 0.10 (output)
-      short_model_name: OpenAI GPT OSS 20B
+      model_name: meta-llama/llama-3.1-70b-instruct  # 70 Bil. | 0.10 (input) | 0.32 (output)
+      short_model_name: Llama 3.1 70B (Leader)
       endpoint:
         api_base_url: https://openrouter.ai/api/v1
         api_key: ${OPENROUTER_API_KEY}
@@ -166,8 +165,8 @@ cascade_complex_run:
         max_tokens: 8192
         temperature: 0.5
     worker_model_2:
-      model_name: google/gemma-3-27b-it  # 27 Bil. | 0.04 (input) | 0.15 (output)
-      short_model_name: Google Gemma 3 27B
+      model_name: qwen/qwen-2.5-32b-instruct  # 32 Bil. | 0.10 (input) | 0.30 (output)
+      short_model_name: Qwen 2.5 32B
       endpoint:
         api_base_url: https://openrouter.ai/api/v1
         api_key: ${OPENROUTER_API_KEY}
@@ -178,8 +177,8 @@ cascade_complex_run:
         max_tokens: 8192
         temperature: 0.5
     worker_model_3:
-      model_name: mistralai/mistral-small-3.2-24b-instruct  # 24 Bil. | 0.06 (input) | 0.18 (output)
-      short_model_name: Mistral Small 3.2 24B Instruc
+      model_name: deepseek/deepseek-v3.2  # 30 Bil. | 0.05 (input) | 0.20 (output)
+      short_model_name: deepseek/deepseek-v3.2
       endpoint:
         api_base_url: https://openrouter.ai/api/v1
         api_key: ${OPENROUTER_API_KEY}
@@ -193,8 +192,8 @@ cascade_complex_run:
   # CASCADE LEVEL 4 - 4 worker models
   cascade_lvl_4:
     worker_model_1:
-      model_name: z-ai/glm-4-32b  # 32 Bil. | 0.10 (input) | 0.10 (output)
-      short_model_name: Z-AI GLM 4 32B
+      model_name: deepseek/deepseek-chat-v3.1  # 671B MoE | 0.15 (input) | 0.75 (output)
+      short_model_name: DeepSeek Chat V3.1 (Leader)
       endpoint:
         api_base_url: https://openrouter.ai/api/v1
         api_key: ${OPENROUTER_API_KEY}
@@ -205,8 +204,8 @@ cascade_complex_run:
         max_tokens: 8192
         temperature: 0.5
     worker_model_2:
-      model_name: nvidia/nemotron-3-nano-30b-a3b  # 30 Bil. | 0.05 (input) | 0.20 (output)
-      short_model_name: NVIDIA Nemotron 3 Nano 30B A3B
+      model_name: meta-llama/llama-3.1-70b-instruct  # 70 Bil. | 0.10 (input) | 0.32 (output)
+      short_model_name: Llama 3.1 70B
       endpoint:
         api_base_url: https://openrouter.ai/api/v1
         api_key: ${OPENROUTER_API_KEY}
@@ -217,8 +216,8 @@ cascade_complex_run:
         max_tokens: 8192
         temperature: 0.5
     worker_model_3:
-      model_name: qwen/qwen3-32b  # 32 Bil. | 0.08 (input) | 0.24 (output)
-      short_model_name: Qwen 3 32B
+      model_name: qwen/qwen-2.5-72b-instruct  # 72 Bil. | 0.35 (input) | 1.20 (output)
+      short_model_name: Qwen 2.5 72B
       endpoint:
         api_base_url: https://openrouter.ai/api/v1
         api_key: ${OPENROUTER_API_KEY}
@@ -229,8 +228,8 @@ cascade_complex_run:
         max_tokens: 8192
         temperature: 0.5
     worker_model_4:
-      model_name: baidu/ernie-4.5-21b-a3b  # 32 Bil. | 0.05 (input) | 0.20 (output)
-      short_model_name: Baidu Ernie 4.5 21B A3B
+      model_name: nousresearch/hermes-4-70b  # 70 Bil. | 0.11 (input) | 0.38 (output)
+      short_model_name: Hermes 4 70B
       endpoint:
         api_base_url: https://openrouter.ai/api/v1
         api_key: ${OPENROUTER_API_KEY}
@@ -244,8 +243,8 @@ cascade_complex_run:
   # CASCADE LEVEL 5 - 5 worker models
   cascade_lvl_5:
     worker_model_1:
-      model_name: z-ai/glm-4.7-flash  # 30 Bil. | 0.06 (input) | 0.40 (output)
-      short_model_name: Z-AI GLM 4.7 Flash
+      model_name: minimax/minimax-m2.5  # 30 Bil. | 0.06 (input) | 0.40 (output)
+      short_model_name: minimax/minimax-m2.5
       endpoint:
         api_base_url: https://openrouter.ai/api/v1
         api_key: ${OPENROUTER_API_KEY}
@@ -256,8 +255,8 @@ cascade_complex_run:
         max_tokens: 8192
         temperature: 0.5
     worker_model_2:
-      model_name: nvidia/llama-3.3-nemotron-super-49b-v1.5  # 49 Bil. | 0.10 (input) | 0.40 (output)
-      short_model_name: NVIDIA Llama 3.3 Nemotron Super 49B v1.5
+      model_name: openai/gpt-oss-120b  # 49 Bil. | 0.10 (input) | 0.40 (output)
+      short_model_name: openai/gpt-oss-120b
       endpoint:
         api_base_url: https://openrouter.ai/api/v1
         api_key: ${OPENROUTER_API_KEY}
@@ -268,20 +267,8 @@ cascade_complex_run:
         max_tokens: 8192
         temperature: 0.5
     worker_model_3:
-      model_name: qwen/qwen3-30b-a3b-thinking-2507  # 30 Bil. | 0.051 (input) | 0.34 (output)
-      short_model_name: Qwen 3 30B A3B Thinking 2507
-      endpoint:
-        api_base_url: https://openrouter.ai/api/v1
-        api_key: ${OPENROUTER_API_KEY}
-      pricing:
-        input: 0.051
-        output: 0.34
-      parameters:
-        max_tokens: 8192
-        temperature: 0.5
-    worker_model_4:
-      model_name: nousresearch/hermes-4-70b  # 70 Bil. | 0.11 (input) | 0.38 (output)
-      short_model_name: Hermes 4 70B
+      model_name: qwen/qwen3-coder-next  # 70 Bil. | 0.11 (input) | 0.38 (output)
+      short_model_name:  Qwen3 Coder Next
       endpoint:
         api_base_url: https://openrouter.ai/api/v1
         api_key: ${OPENROUTER_API_KEY}
@@ -291,9 +278,9 @@ cascade_complex_run:
       parameters:
         max_tokens: 8192
         temperature: 0.5
-    worker_model_5:
-      model_name: openai/gpt-5-nano  # <40 Bil. | 0.05 (input) | 0.40 (output)
-      short_model_name: OpenAI GPT-5 Nano
+    worker_model_4:
+      model_name: deepseek/deepseek-chat-v3.1  # 671B MoE | 0.15 (input) | 0.75 (output)
+      short_model_name: DeepSeek Chat V3.1 (Leader)
       endpoint:
         api_base_url: https://openrouter.ai/api/v1
         api_key: ${OPENROUTER_API_KEY}

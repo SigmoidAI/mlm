@@ -8,6 +8,9 @@ import tempfile
 import uuid
 from pathlib import Path
 from typing import Any, Coroutine, Optional, Union
+import openai
+import openai.resources.chat.completions
+from collections import defaultdict
 
 import json_repair
 from loguru import logger
@@ -167,6 +170,7 @@ When evaluating take into consideration:
 4. Verify the output format matches any specified format
 5. Assess completeness - are all parts of the task done?
 6. Validate the quality of task execution
+7. Components used in solution are not outdated or deprecated
 
 Provide in individual reviews a reason/feedback why the answer was graded with that specific score. 
 Make sure these reasons/feedback are independent between other workers reviews.
@@ -217,7 +221,7 @@ USER_PROMPT: str = {
 }
 
 # NUMBER OF QUESTIONS TO BE EVALUATED/ASKED TO THE CASCADE.
-NUM_MAX_QUESTIONS: int = 10  # ! CONFIGURABLE
+NUM_MAX_QUESTIONS: int = 100  # ! CONFIGURABLE
 
 # CASCADE MODELS CONFIG
 CASCADE_MODELS_CONFIG: dict[str, str] = make_config()
@@ -226,14 +230,14 @@ COMPLEX_RUN_CONFIG_KEY: str = "cascade_complex_run"
 # JUDGE MODELS CONFIG
 JUDGE_MODELS_CONFIG_KEY: str = "judge_models"
 JUDGE_MODEL_KEY: str = "judge_model_1"  # ! CONFIGURABLE
-ACCEPTABLE_SCORE: float = 0.90  # ! CONFIGURABLE
+ACCEPTABLE_SCORE: float = 0.95  # ! CONFIGURABLE
 
 # CASCADE LEVEL
 MAX_CASCADE_LEVEL: int = 5  # ! CONFIGURABLE (1 <= value <= 5)
 
 # MLFLOW
 MLFLOW_TRACKING_URI: str = os.getenv(key="MLFLOW_TRACKING_URI", default="http://127.0.0.1:5000")
-EXPERIMENT_NAME: str = f"complex_workflow_run_max_{NUM_MAX_QUESTIONS}"  # ! CONFIGURABLE
+EXPERIMENT_NAME: str = f"complex_workflow_5th_only_{NUM_MAX_QUESTIONS}"  # ! CONFIGURABLE
 
 # EXPERIMENT DATASET # ! CONFIGURABLE
 # * Arena Hard Auto v1.0
@@ -541,6 +545,61 @@ def initialize_judge_agent(judges_config: dict[str, Any], judge_key: str) -> Opt
     
     return validator_agent
 
+USAGE_TRACKER = defaultdict(int)
+USAGE_TRACKER['last_cost'] = 0.0
+USAGE_TRACKER['last_input'] = 0
+USAGE_TRACKER['last_output'] = 0
+_orig_create_sync = openai.resources.chat.completions.Completions.create
+_orig_create_async = openai.resources.chat.completions.AsyncCompletions.create
+
+
+def _extract_cost_from_response(response):
+    """Helper to pull cost from response object"""
+    if hasattr(response, 'usage') and response.usage:
+        in_tokens = response.usage.prompt_tokens
+        out_tokens = response.usage.completion_tokens
+
+        # OpenRouter 'cost' field is often hidden in 'model_extra' by the OpenAI SDK
+        # We convert to dict to find it safely
+        try:
+            usage_dict = response.usage.model_dump()
+            exact_cost = usage_dict.get('cost')
+
+            # Update Global Tracker
+            USAGE_TRACKER['last_input'] = in_tokens
+            USAGE_TRACKER['last_output'] = out_tokens
+
+            if exact_cost is not None:
+                USAGE_TRACKER['last_cost'] = float(exact_cost)
+                print(f"\n[HOOK] 💰 OpenRouter reported exact cost: ${float(exact_cost):.6f}")
+            else:
+                USAGE_TRACKER['last_cost'] = 0.0
+                print(f"\n[HOOK] ⚠️ Cost not found. Tokens: {in_tokens} in / {out_tokens} out")
+        except Exception as e:
+            print(f"\n[HOOK] Error parsing usage: {e}")
+
+
+# 2. Define Sync Spy
+def _spy_create_sync(*args, **kwargs):
+    response = _orig_create_sync(*args, **kwargs)
+    _extract_cost_from_response(response)
+    return response
+
+
+# 3. Define Async Spy (CRITICAL for PydanticAI)
+async def _spy_create_async(*args, **kwargs):
+    response = await _orig_create_async(*args, **kwargs)
+    _extract_cost_from_response(response)
+    return response
+
+
+# 4. Apply Patches
+openai.resources.chat.completions.Completions.create = _spy_create_sync
+openai.resources.chat.completions.AsyncCompletions.create = _spy_create_async
+print("✅ Universal Cost Hook Installed (Sync + Async)!")
+# --- END OF UNIVERSAL COST HOOK ---
+
+
 
 def __clean_full_string(string_to_clean: str) -> str:
     """Helper function to clean strings from \\n \\t \\r symbols.
@@ -585,8 +644,33 @@ async def run_working_agent(worker_agent: tuple[str, WorkingAgent], func: Corout
     """
     agent_id, agent = worker_agent
     func_kwargs = {**kwargs}
-    
-    agent_answer: AgentResponse = await func(**func_kwargs)
+
+    # Reset tracker before call
+    USAGE_TRACKER['last_cost'] = 0.0
+    USAGE_TRACKER['last_input'] = 0
+    USAGE_TRACKER['last_output'] = 0
+
+    try:
+        agent_answer: AgentResponse = await func(**func_kwargs)
+    except Exception as e:
+        logger.error(f"Agent {agent_id} failed with exception: {e}")
+        cost = {"input_cost": 0.0, "output_cost": 0.0, "total_cost": 0.0}
+        return (agent_id, None, cost)
+
+    # Capture cost after call
+    if USAGE_TRACKER['last_cost'] > 0:
+        cost = {
+            "input_cost": 0.0,
+            "output_cost": 0.0,
+            "total_cost": USAGE_TRACKER['last_cost']
+        }
+    else:
+        # Fallback estimation
+        cost = {
+            "input_cost": 0.0,
+            "output_cost": 0.0,
+            "total_cost": 0.0
+        }
     
     if isinstance(agent_answer, Exception):
         logger.error(f"Agent {agent_id} failed: {agent_answer}")
@@ -598,10 +682,10 @@ async def run_working_agent(worker_agent: tuple[str, WorkingAgent], func: Corout
         logger.success(f"Agent {agent_id} succeeded: {__format_response(long_string_log=agent_answer.content)}")
     
     logger.success(f"Generated valid response by agent: {agent_id} - {agent.model_id}")
-    return (agent_id, agent_answer)
+    return  (agent_id, agent_answer, cost)
 
 
-async def run_cascade_initial_answer(worker_agents: dict[str, WorkingAgent], prompt_data: tuple[str, str], current_level: int = 1) -> Optional[dict[str, AgentResponse]]:
+async def run_cascade_initial_answer(worker_agents: dict[str, WorkingAgent], prompt_data: tuple[str, str], current_level: int = 1) -> tuple[dict[str, AgentResponse], float]:
     """Generate initial answers concurrently.
 
     Args:
@@ -610,7 +694,7 @@ async def run_cascade_initial_answer(worker_agents: dict[str, WorkingAgent], pro
         current_level (int, optional): Current level of the cascade. Defaults to 1.
 
     Returns:
-        Optional[dict[str, AgentResponse]]: Mapping of AgentResponse objects to the user prompt.
+        tuple[dict[str, AgentResponse], float]: Responses and total cost
     """
     prompt_id, prompt_question = prompt_data
     logger.info(f"Starting initial answer generation at cascade level: {current_level} with: {len(worker_agents.keys())} working agents and with prompt with ID: {prompt_id} - \"{__format_response(long_string_log=prompt_question)}\"")
@@ -631,10 +715,18 @@ async def run_cascade_initial_answer(worker_agents: dict[str, WorkingAgent], pro
     results: list[tuple[str, AgentResponse]] = await asyncio.gather(*tasks, return_exceptions=True)
 
     agents_responses: dict[str, AgentResponse] = {}
-    
+    total_cost = 0.0
+
+
     for response in results:
-        
-        agent_id, response_content = response
+
+        if isinstance(response, Exception):
+            logger.error(f"Agent failed with exception: {response}")
+            continue
+
+        agent_id, response_content, cost = response
+        total_cost += cost['total_cost']
+
         if not response_content:
             # Since order of results is preserved by asyncio.gather() function in the same order as awaitables in *aws = *tasks
             logger.error(f"Agent {agent_id} failed: {response_content}")
@@ -644,10 +736,10 @@ async def run_cascade_initial_answer(worker_agents: dict[str, WorkingAgent], pro
             agents_responses[agent_id] = response_content
             
     logger.success(f"Generated {len(agents_responses.keys())} valid responses out of {len(worker_agents)} agents")
-    return agents_responses
+    return agents_responses, total_cost
 
 
-async def run_cascade_debate(worker_agents: dict[str, WorkingAgent], prev_answers: dict[str, AgentResponse], current_level: int = 1) -> Optional[dict[str, AgentResponse]]:
+async def run_cascade_debate(worker_agents: dict[str, WorkingAgent], prev_answers: dict[str, AgentResponse], current_level: int = 1) -> tuple[dict[str, AgentResponse], float]:
     """Generate critique/debate responses where each agent reviews peer responses.
 
     Args:
@@ -656,7 +748,7 @@ async def run_cascade_debate(worker_agents: dict[str, WorkingAgent], prev_answer
         current_level (int, optional): Current cascade level. Defaults to 1.
 
     Returns:
-        Optional[dict[str, AgentResponse]]: Dict of critique AgentResponse objects mapped to their generator agent ID.
+        tuple[dict[str, AgentResponse], float]: Critiques and total cost
     """
     logger.info(f"Starting debate process at cascade level: {current_level} with: {len(worker_agents.keys())} working agents")
     
@@ -667,12 +759,16 @@ async def run_cascade_debate(worker_agents: dict[str, WorkingAgent], prev_answer
 
     tasks = []
     for agent_id, worker_agent in worker_agents.items():
+        if agent_id not in prev_answers or isinstance(prev_answers[agent_id], str):
+            logger.warning(f"Skipping {agent_id} - no valid answer to critique from")
+            continue
+
         logger.info(f"Attempting to generate critique response by agent: {agent_id} - {worker_agent.agent}")
         # print(f"{prev_answers[agent_id].author_id} - {agent_id}")
         individual_peer_responses: list[Prompt] = [
             Prompt(content=peer_response.content, model_tier="complex")
             for peer_id, peer_response in prev_answers.items()
-            if peer_id != agent_id
+            if peer_id != agent_id and not isinstance(peer_response, str)  # ADD THIS CHECK
         ]
         
         # print(
@@ -696,7 +792,7 @@ async def run_cascade_debate(worker_agents: dict[str, WorkingAgent], prev_answer
             "peer_responses": individual_peer_responses
         }
         
-        logger.info(f"Agent {agent_id} will critique {len(individual_peer_responses)} ({" ".join([peer_response.author_id for peer_id, peer_response in prev_answers.items() if peer_id != agent_id])}) peer response(s)")
+        #logger.info(f"Agent {agent_id} will critique {len(individual_peer_responses)} ({" ".join([peer_response.author_id for peer_id, peer_response in prev_answers.items() if peer_id != agent_id])}) peer response(s)")
         
         tasks.append(
             run_working_agent(
@@ -705,14 +801,25 @@ async def run_cascade_debate(worker_agents: dict[str, WorkingAgent], prev_answer
                 **func_kwargs
             )
         )
-        
+
+    if not tasks:
+        logger.warning("No critique tasks created - all agents failed or had no peers")
+        return {}, 0.0
+
     logger.info(f"Executing {len(tasks)} critique tasks in parallel")
-    critiques: list[tuple[str, AgentResponse]] = await asyncio.gather(*tasks, return_exceptions=True)
+    critiques: list[tuple[str, AgentResponse, dict]] = await asyncio.gather(*tasks, return_exceptions=True)
     
     valid_critiques: dict[str, AgentResponse] = {}
-    
+    total_cost = 0.0
+
     for critique in critiques:
-        agent_id, critique_content = critique
+
+        if isinstance(critique, Exception):
+            logger.error(f"Critique failed with exception: {critique}")
+            continue
+
+        agent_id, critique_content, cost = critique
+        total_cost += cost['total_cost']
         if not critique_content:
             # Since order of results is preserved by asyncio.gather() function in the same order as awaitables in *aws = *tasks
             logger.error(f"Agent {agent_id} critique failed: {critique}")
@@ -721,7 +828,7 @@ async def run_cascade_debate(worker_agents: dict[str, WorkingAgent], prev_answer
             valid_critiques[agent_id] = critique_content
             
     logger.success(f"Debate completed. Generated {len(valid_critiques.keys())} valid critiques out of {len(worker_agents)} agents")
-    return valid_critiques
+    return valid_critiques, total_cost
 
 
 async def run_validation(judge_agent: ValidatorAgent, question: str, prompt: Prompt, answers: dict[str, AgentResponse]) -> Optional[dict[str, Any]]:
@@ -839,6 +946,10 @@ async def run_cascade_refinement_loop(worker_agents: dict[str, WorkingAgent],
     
     tasks = []
     for worker_id, worker_agent in worker_agents.items():
+        if worker_id not in init_answers or init_answers[worker_id] == 'N/A':
+            logger.warning(f"Skipping {worker_id} - no valid initial answer")
+            continue
+
         initial_answer: tuple[str, AgentResponse] = (worker_id, init_answers[worker_id])
         peers_critiques: dict[str, AgentResponse] = {peer_id: peer_critique for peer_id, peer_critique in critiques.items() if worker_id != peer_id}
 
@@ -860,12 +971,18 @@ async def run_cascade_refinement_loop(worker_agents: dict[str, WorkingAgent],
             )
         )
     
-    refinement_results: list[tuple[str, AgentResponse]] = await asyncio.gather(*tasks, return_exceptions=True)
+    refinement_results: list[tuple[str, AgentResponse, dict]] = await asyncio.gather(*tasks, return_exceptions=True)
 
     agents_responses: dict[str, AgentResponse] = {}
-    
+    total_cost = 0.0
+
     for refinement_result in refinement_results:
-        agent_id, refinement_result_content = refinement_result
+        if isinstance(refinement_result, Exception):
+            logger.error(f"Refinement failed with exception: {refinement_result}")
+            continue
+
+        agent_id, refinement_result_content, cost = refinement_result
+        total_cost += cost['total_cost']
         if not refinement_result_content:
             # Since order of results is preserved by asyncio.gather() function in the same order as awaitables in *aws = *tasks
             logger.error(f"Agent {agent_id} refinement failed: {refinement_result_content}")
@@ -874,7 +991,7 @@ async def run_cascade_refinement_loop(worker_agents: dict[str, WorkingAgent],
             agents_responses[agent_id] = refinement_result_content
             
     logger.success(f"Generated {len(agents_responses.keys())} valid refined responses out of {len(worker_agents)} agents")
-    return agents_responses
+    return agents_responses, total_cost
 
 
 def convert_agents_answers_to_ensemble_prompt(answers: dict[str, AgentResponse]) -> str:
@@ -1023,7 +1140,8 @@ def log_final_answer_trace(question_id: str,
                            synthetized_answer: str, 
                            best_worker_model_id: str, 
                            cascade_level: int, 
-                           best_confidence_score: float) -> None:
+                           best_confidence_score: float,
+                           total_cost: float) -> None:
     """Log the final answer trace to MLflow.
 
     Args:
@@ -1050,7 +1168,8 @@ def log_final_answer_trace(question_id: str,
         "acceptable_score": acceptable_score,
         "final_best_model" if is_definitive else "best_model": best_worker_model_id,
         "final_cascade_level" if is_definitive else "cascade_level": cascade_level,
-        "final_best_confidence_score" if is_definitive else "best_confidence_score": best_confidence_score
+        "final_best_confidence_score" if is_definitive else "best_confidence_score": best_confidence_score,
+        "total_cost": total_cost
     }
     
     with mlflow.start_span(name="best_final_answer_trace" if is_definitive else f"best_answer_trace_lvl_{cascade_level}", 
@@ -1275,128 +1394,216 @@ def main() -> None:
         question_prompt = question_data['question']
         question_category = question_data['category']
         logger.info(f"[{idx + 1}/{len(questions_mapping.keys())}] Processing prompt with ID: {question_id} - {question_category} - \"{question_prompt}\"")
-        
-        validator_agent = initialize_judge_agent(judges_config=judge_models, judge_key=JUDGE_MODEL_KEY)
-    
-        if not validator_agent:
-            logger.error("Failed to initialize a judge agent.")
-            return
 
-        print(validator_agent)
-        print(validator_agent.model_name)
-        
-        with mlflow.start_run(run_name=question_id):
-            mlflow.log_params({
-                "question_id": question_id,
-                "category": question_category,
-                "in_cascade_judge_model": validator_agent.model_name,
-                "config_key": COMPLEX_RUN_CONFIG_KEY,
-                "version": version
-            })
-            prompt_data: tuple[str, str] = (question_id, question_prompt)
-            
-            for current_cascade_level in range(1, MAX_CASCADE_LEVEL + 1):
-                logger.info(f"Entering cascade level {current_cascade_level}.")
-                
+        try:
+            validator_agent = initialize_judge_agent(judges_config=judge_models, judge_key=JUDGE_MODEL_KEY)
+
+            if not validator_agent:
+                logger.error("Failed to initialize a judge agent.")
+                return
+
+            print(validator_agent)
+            print(validator_agent.model_name)
+
+            with mlflow.start_run(run_name=question_id):
+                mlflow.log_params({
+                    "question_id": question_id,
+                    "category": question_category,
+                    "in_cascade_judge_model": validator_agent.model_name,
+                    "config_key": COMPLEX_RUN_CONFIG_KEY,
+                    "version": version
+                })
+                prompt_data: tuple[str, str] = (question_id, question_prompt)
+
+                for current_cascade_level in range(1, MAX_CASCADE_LEVEL + 1):
+                    logger.info(f"Entering cascade level {current_cascade_level}.")
+
                 # * STEP 3: Configuring Agents
                 # * Loading complex run config models
-                cascade_lvl_models = load_models_from_config(config=CASCADE_MODELS_CONFIG, 
-                                                             config_class_key=COMPLEX_RUN_CONFIG_KEY, 
+                    cascade_lvl_models = load_models_from_config(config=CASCADE_MODELS_CONFIG,
+                                                             config_class_key=COMPLEX_RUN_CONFIG_KEY,
                                                              config_subclass_key=f"cascade_lvl_{current_cascade_level}")
-                print(json.dumps(cascade_lvl_models, indent=2))
-                
-                
-                # ! TEMP START 
-                # * CHANGE TEMPERATURE BASED ON QUESTION CATEGORY TYPE: random from range (0.3-0.7) x2 (0.6-1.4) when creative
-                match question_category:
-                    case "hard_prompt":
-                        for worker_model_conf in cascade_lvl_models.values():
-                            worker_model_conf["parameters"]["temperature"] = round(random.uniform(0.3, 0.7), 2)
-                    case "creative_writing":
-                        for worker_model_conf in cascade_lvl_models.values():
-                            worker_model_conf["parameters"]["temperature"] = round(random.uniform(0.6, 1.4), 2)
-                print(json.dumps(cascade_lvl_models, indent=2))
-                # ! TEMP END
-                
-                
+                    print(json.dumps(cascade_lvl_models, indent=2))
+
+                    # ! TEMP START
+                    # * CHANGE TEMPERATURE BASED ON QUESTION CATEGORY TYPE: random from range (0.3-0.7) x2 (0.6-1.4) when creative
+                    match question_category:
+                        case "hard_prompt":
+                            for worker_model_conf in cascade_lvl_models.values():
+                                worker_model_conf["parameters"]["temperature"] = round(random.uniform(0.3, 0.7), 2)
+                        case "creative_writing":
+                            for worker_model_conf in cascade_lvl_models.values():
+                                worker_model_conf["parameters"]["temperature"] = round(random.uniform(0.6, 1.4), 2)
+                    print(json.dumps(cascade_lvl_models, indent=2))
+                    # ! TEMP END
+
                 # * Instantiate Agents using working models configs
-                worker_agents_dict: dict[str, WorkingAgent] = initialize_worker_agents(models_config=cascade_lvl_models, cascade_lvl=current_cascade_level)
-                
-                for worker_key, worker_agent in worker_agents_dict.items():
-                    print(f"{worker_key} - {worker_agent.model_id}")
-                
+                    worker_agents_dict: dict[str, WorkingAgent] = initialize_worker_agents(models_config=cascade_lvl_models, cascade_lvl=current_cascade_level)
+
+                    for worker_key, worker_agent in worker_agents_dict.items():
+                        print(f"{worker_key} - {worker_agent.model_id}")
+                    cascade_total_cost = 0.0
+
+
                 # * STEP 4: Working Agents actions:
                 # * Generate initial responses
-                initial_answers: dict[str, AgentResponse] = asyncio.run(run_cascade_initial_answer(worker_agents=worker_agents_dict, 
-                                                                                                   prompt_data=prompt_data, 
-                                                                                                   current_level=current_cascade_level))
-                
+                    initial_answers, init_cost = asyncio.run(run_cascade_initial_answer(worker_agents=worker_agents_dict,
+                                                                                    prompt_data=prompt_data,
+                                                                                   current_level=current_cascade_level))
+
+                    cascade_total_cost += init_cost
+
                 # print(f"Question {idx}: {question_id} - {questions_mapping[question_id]}")
-                for agent_initial_answer in initial_answers.values():
-                    print(f"\nAgent {agent_initial_answer.author_id}: \n\tResponse: {agent_initial_answer.content}")
+                    for agent_initial_answer in initial_answers.values():
+                        if isinstance(agent_initial_answer, str):  # Skip 'N/A' entries
+                            continue
+                        print(f"\nAgent {agent_initial_answer.author_id}: \n\tResponse: {agent_initial_answer.content}")
 
-                # * Generate Critiques/Debate prompts
-                critiques: dict[str, AgentResponse] = asyncio.run(run_cascade_debate(worker_agents=worker_agents_dict, 
-                                                                                     prev_answers=initial_answers, 
-                                                                                     current_level=current_cascade_level))
-                
-                for agent_critique in critiques.values():
-                    print(f"\nAgent {agent_critique.author_id}: \n\tResponse: {agent_critique.content}")
+                        #print(f"\nAgent {agent_initial_answer.author_id}: \n\tResponse: {agent_initial_answer.content}")
 
-                # * Generate refined final answers based on previous initial answers and critiques
-                final_answers: dict[str, AgentResponse] = asyncio.run(
-                    run_cascade_refinement_loop(
-                        worker_agents=worker_agents_dict, 
-                        init_question=question_prompt,
-                        init_answers=initial_answers, 
-                        critiques=critiques, 
-                        current_level=current_cascade_level
+                    # * Generate Critiques/Debate prompts
+                    critiques, critique_cost = asyncio.run(run_cascade_debate(worker_agents=worker_agents_dict,
+                                                                                         prev_answers=initial_answers,
+                                                                                         current_level=current_cascade_level))
+                    cascade_total_cost += critique_cost
+
+                    for agent_critique in critiques.values():
+                        if isinstance(agent_critique, str):  # Skip 'N/A' entries
+                            continue
+                        print(f"\nAgent {agent_critique.author_id}: \n\tResponse: {agent_critique.content}")
+
+                    # * Generate refined final answers based on previous initial answers and critiques
+                    final_answers, refine_cost = asyncio.run(
+                        run_cascade_refinement_loop(
+                            worker_agents=worker_agents_dict,
+                            init_question=question_prompt,
+                            init_answers=initial_answers,
+                            critiques=critiques,
+                            current_level=current_cascade_level
+                        )
                     )
-                )
-                
-                for agent_final_answer in final_answers.values():
-                    print(f"\nAgent {agent_final_answer.author_id}: \n\tResponse: {agent_final_answer.content}")
-                
-                # * STEP 5: Integrate Judge Agent to select the best final answer.
-                validator_prompt: str = ensemble_agents_answers(agents_answers=final_answers, 
-                                                                initial_question=question_prompt, 
-                                                                premise_clause=JUDGE_PROMPT_1)
-                validator_answer: dict[str, Any] = asyncio.run(run_validation(judge_agent=validator_agent,
-                                                                              question=question_prompt,
-                                                                              prompt=validator_prompt,
-                                                                              answers=final_answers))
-                if not validator_answer:
-                    logger.error('ValidatorAgent did not succeed. Falling back to default...')
-                    # first_answer = list(final_answers.values())[0] if final_answers else None
-    
+                    cascade_total_cost += refine_cost
+                    mlflow.log_metric(f"cascade_lvl_{current_cascade_level}_cost", cascade_total_cost)
+                    mlflow.log_metric("total_cost", cascade_total_cost)  # Update cumulative
 
-                    # individual_reviews = {}
-                    # for idx, _ in enumerate(final_answers.keys(), start=1):
-                    #     individual_reviews[f"worker_model_{idx}"] = {
-                    #         "confidence_score": 0.0,
-                    #         "reason": "N/A",
-                    #     }
-                    
-                    # validator_answer = {
-                    #     "evaluation": {
-                    #         "question": question_prompt,
-                    #         "best_answer": {
-                    #             "best_worker_model_id": first_answer.author_id if first_answer else "unknown",
-                    #             "best_confidence_score": 0.0,
-                    #             "best_reason": "N/A"    
-                    #         },
-                    #         "individual_reviews": individual_reviews
-                    #     }
-                    # }
-                
-                if validator_answer['evaluation']['best_answer']['best_confidence_score'] >= ACCEPTABLE_SCORE:
-                    # ANSWER GOOD
-                    # TODO: Check how to update this method.
+                    for agent_final_answer in final_answers.values():
+                        if isinstance(agent_final_answer, str):  # Skip 'N/A' entries
+                            continue
+                        print(f"\nAgent {agent_final_answer.author_id}: \n\tResponse: {agent_final_answer.content}")
+
+                    # * STEP 5: Integrate Judge Agent to select the best final answer.
+                    validator_prompt: str = ensemble_agents_answers(agents_answers=final_answers,
+                                                                    initial_question=question_prompt,
+                                                                    premise_clause=JUDGE_PROMPT_1)
+                    validator_answer: dict[str, Any] = asyncio.run(run_validation(judge_agent=validator_agent,
+                                                                                  question=question_prompt,
+                                                                                  prompt=validator_prompt,
+                                                                                  answers=final_answers))
+                    if not validator_answer:
+                        logger.error('ValidatorAgent did not succeed. Falling back to default...')
+
+                        # Get first successful answer or default
+                        first_valid = next((k for k, v in final_answers.items() if not isinstance(v, str)), None)
+
+                        if not first_valid:
+                            logger.error("No valid answers available. Skipping question.")
+                            break
+
+                        # Create fallback structure
+                        validator_answer = {
+                            "evaluation": {
+                                "question": question_prompt,
+                                "best_answer": {
+                                    "best_worker_model_id": first_valid,
+                                    "best_confidence_score": 0.0,
+                                    "best_reason": "Judge failed - using first available answer"
+                                },
+                                "individual_reviews": {
+                                    first_valid: {
+                                        "confidence_score": 0.0,
+                                        "reason": "Judge unavailable"
+                                    }
+                                }
+                            }
+                        }
+                        logger.info(f"Using fallback answer from: {first_valid}")
+
+
+                    if validator_answer['evaluation']['best_answer']['best_confidence_score'] >= ACCEPTABLE_SCORE:
+                        # ANSWER GOOD
+                        # TODO: Check how to update this method.
+                        synthetized_final_answer: str = asyncio.run(synthetize_final_answer(validator_agent=validator_agent, final_answers=final_answers))
+
+                        best_worker_id = validator_answer['evaluation']['best_answer']['best_worker_model_id']
+                        # Remove '_answer' suffix if present
+                        best_worker_id_clean = best_worker_id.replace('_answer', '')
+
+                        print(f"Synthetized final answer:\n{synthetized_final_answer}")
+                        print(f"FINAL ANSWER (DIRECT FROM WORKER):\n{final_answers[best_worker_id_clean].content}")
+
+                        log_final_answer_trace(
+                            question_id=question_id,
+                            question_prompt=original_question,
+                            is_definitive=True,
+                            acceptable_score=ACCEPTABLE_SCORE,
+
+                            # TODO: Maybe try with best all previous answers. Engage memory of validator?
+                            synthetized_answer=final_answers[best_worker_id_clean].content,
+                            best_worker_model_id=cascade_lvl_models[best_worker_id_clean]['model_name'],
+                            cascade_level=current_cascade_level,
+                            best_confidence_score=validator_answer['evaluation']['best_answer']['best_confidence_score']
+                            ,total_cost=cascade_total_cost
+                        )
+
+                        logger.success(f"Best answer ({validator_answer['evaluation']['best_answer']['best_confidence_score']}) was generated by: {validator_answer['evaluation']['best_answer']['best_worker_model_id']} at cascade level: {current_cascade_level}, with answer: {__format_response(long_string_log=final_answers[validator_answer['evaluation']['best_answer']['best_worker_model_id']].content)}.")
+
+                        results_file: Path = category_iteration_files[question_category]
+
+                        save_results_to_jsonl(
+                            question_id=question_id,
+                            num_questions=NUM_MAX_QUESTIONS,
+                            category=question_category,
+                            question=original_question,
+                            answer=final_answers[validator_answer['evaluation']['best_answer']['best_worker_model_id']].content,
+                            cascade_lvl=current_cascade_level,
+                            winner_model=cascade_lvl_models[validator_answer['evaluation']['best_answer']['best_worker_model_id']]['model_name'],
+                            judge_model=validator_agent.model_name,
+                            score=validator_answer['evaluation']['best_answer']['best_confidence_score'],
+                            save_to_path_file=results_file
+                        )
+
+                        break
+
+                    # NEXT CASCADE
+                    logger.info(f"Current cascade level: {current_cascade_level} did not result in good answer.")
+                    logger.info(f"Best answer ({validator_answer['evaluation']['best_answer']['best_confidence_score']}) was generated by: {validator_answer['evaluation']['best_answer']['best_worker_model_id']}, with answer: {__format_response(long_string_log=final_answers[validator_answer['evaluation']['best_answer']['best_worker_model_id']].content)}")
+
+                    log_final_answer_trace(
+                        question_id=question_id,
+                        question_prompt=original_question,
+                        is_definitive=False,
+                        acceptable_score=ACCEPTABLE_SCORE,
+                        # TODO: Maybe try with best all previous answers. Engage memory of validator?
+                        synthetized_answer=final_answers[validator_answer['evaluation']['best_answer']['best_worker_model_id']].content,
+                        best_worker_model_id=cascade_lvl_models[validator_answer['evaluation']['best_answer']['best_worker_model_id']]['model_name'],
+                        cascade_level=current_cascade_level,
+                        best_confidence_score=validator_answer['evaluation']['best_answer']['best_confidence_score'],
+                        total_cost=cascade_total_cost)
+
+                    next_cascade_prompt: str = ensemble_agents_answers(agents_answers=final_answers,
+                                                                       initial_question=question_prompt,
+                                                                       premise_clause=NEXT_CASCADE_LEVEL_PROMPT,
+                                                                       agents_answers_review=validator_answer)
+
+                    prompt_data = (question_id, next_cascade_prompt)
+                # LAST LEVEL OF CASCADE WITH NO SUCCESS
+                else:
+                    logger.warning(f"Last level of cascade: {current_cascade_level} done. No answer better than {ACCEPTABLE_SCORE} "
+                                f"was deducted. Falling back to best answer at this level provided by: {validator_answer['evaluation']['best_answer']['best_confidence_score']}")
+                    logger.info(f"Best answer ({validator_answer['evaluation']['best_answer']['best_confidence_score']}) was generated by: {validator_answer['evaluation']['best_answer']['best_worker_model_id']}, with answer: {__format_response(long_string_log=final_answers[validator_answer['evaluation']['best_answer']['best_worker_model_id']].content)}")
+
                     synthetized_final_answer: str = asyncio.run(synthetize_final_answer(validator_agent=validator_agent, final_answers=final_answers))
-                    
-                    print(f"Synthetized final answer:\n{synthetized_final_answer}")
-                    print(f"FINAL ANSWER (DIRECT FROM WORKER):\n{final_answers[validator_answer['evaluation']['best_answer']['best_worker_model_id']].content}")
-                    
+
                     log_final_answer_trace(
                         question_id=question_id,
                         question_prompt=original_question,
@@ -1406,13 +1613,14 @@ def main() -> None:
                         synthetized_answer=final_answers[validator_answer['evaluation']['best_answer']['best_worker_model_id']].content,
                         best_worker_model_id=cascade_lvl_models[validator_answer['evaluation']['best_answer']['best_worker_model_id']]['model_name'],
                         cascade_level=current_cascade_level,
-                        best_confidence_score=validator_answer['evaluation']['best_answer']['best_confidence_score']
-                    )
-                    
-                    logger.success(f"Best answer ({validator_answer['evaluation']['best_answer']['best_confidence_score']}) was generated by: {validator_answer['evaluation']['best_answer']['best_worker_model_id']} at cascade level: {current_cascade_level}, with answer: {__format_response(long_string_log=final_answers[validator_answer['evaluation']['best_answer']['best_worker_model_id']].content)}.")
-                    
+                        best_confidence_score=validator_answer['evaluation']['best_answer']['best_confidence_score'],
+                        total_cost =cascade_total_cost)
+
+                    print(f"Synthetized final answer:\n{synthetized_final_answer}")
+                    print(f"FINAL ANSWER (DIRECT FROM WORKER):\n{final_answers[validator_answer['evaluation']['best_answer']['best_worker_model_id']].content}")
+
                     results_file: Path = category_iteration_files[question_category]
-                    
+
                     save_results_to_jsonl(
                         question_id=question_id,
                         num_questions=NUM_MAX_QUESTIONS,
@@ -1425,71 +1633,13 @@ def main() -> None:
                         score=validator_answer['evaluation']['best_answer']['best_confidence_score'],
                         save_to_path_file=results_file
                     )
-                    
-                    break
 
-                # NEXT CASCADE
-                logger.info(f"Current cascade level: {current_cascade_level} did not result in good answer.")
-                logger.info(f"Best answer ({validator_answer['evaluation']['best_answer']['best_confidence_score']}) was generated by: {validator_answer['evaluation']['best_answer']['best_worker_model_id']}, with answer: {__format_response(long_string_log=final_answers[validator_answer['evaluation']['best_answer']['best_worker_model_id']].content)}")
-                
-                log_final_answer_trace(
-                    question_id=question_id,
-                    question_prompt=original_question,
-                    is_definitive=False,
-                    acceptable_score=ACCEPTABLE_SCORE,
-                    # TODO: Maybe try with best all previous answers. Engage memory of validator?
-                    synthetized_answer=final_answers[validator_answer['evaluation']['best_answer']['best_worker_model_id']].content,
-                    best_worker_model_id=cascade_lvl_models[validator_answer['evaluation']['best_answer']['best_worker_model_id']]['model_name'],
-                    cascade_level=current_cascade_level,
-                    best_confidence_score=validator_answer['evaluation']['best_answer']['best_confidence_score']
-                )
-                
-                next_cascade_prompt: str = ensemble_agents_answers(agents_answers=final_answers, 
-                                                                   initial_question=question_prompt, 
-                                                                   premise_clause=NEXT_CASCADE_LEVEL_PROMPT, 
-                                                                   agents_answers_review=validator_answer)
-                
-                prompt_data = (question_id, next_cascade_prompt)
-            # LAST LEVEL OF CASCADE WITH NO SUCCESS
-            else:
-                logger.warning(f"Last level of cascade: {current_cascade_level} done. No answer better than {ACCEPTABLE_SCORE} "
-                            f"was deducted. Falling back to best answer at this level provided by: {validator_answer['evaluation']['best_answer']['best_confidence_score']}")
-                logger.info(f"Best answer ({validator_answer['evaluation']['best_answer']['best_confidence_score']}) was generated by: {validator_answer['evaluation']['best_answer']['best_worker_model_id']}, with answer: {__format_response(long_string_log=final_answers[validator_answer['evaluation']['best_answer']['best_worker_model_id']].content)}")
-                
-                synthetized_final_answer: str = asyncio.run(synthetize_final_answer(validator_agent=validator_agent, final_answers=final_answers))
-                
-                log_final_answer_trace(
-                    question_id=question_id,
-                    question_prompt=original_question,
-                    is_definitive=True,
-                    acceptable_score=ACCEPTABLE_SCORE,
-                    # TODO: Maybe try with best all previous answers. Engage memory of validator?
-                    synthetized_answer=final_answers[validator_answer['evaluation']['best_answer']['best_worker_model_id']].content,
-                    best_worker_model_id=cascade_lvl_models[validator_answer['evaluation']['best_answer']['best_worker_model_id']]['model_name'],
-                    cascade_level=current_cascade_level,
-                    best_confidence_score=validator_answer['evaluation']['best_answer']['best_confidence_score']
-                )
-                
-                print(f"Synthetized final answer:\n{synthetized_final_answer}")
-                print(f"FINAL ANSWER (DIRECT FROM WORKER):\n{final_answers[validator_answer['evaluation']['best_answer']['best_worker_model_id']].content}")
-
-                results_file: Path = category_iteration_files[question_category]
-                
-                save_results_to_jsonl(
-                    question_id=question_id,
-                    num_questions=NUM_MAX_QUESTIONS,
-                    category=question_category,
-                    question=original_question,
-                    answer=final_answers[validator_answer['evaluation']['best_answer']['best_worker_model_id']].content,
-                    cascade_lvl=current_cascade_level,
-                    winner_model=cascade_lvl_models[validator_answer['evaluation']['best_answer']['best_worker_model_id']]['model_name'],
-                    judge_model=validator_agent.model_name,
-                    score=validator_answer['evaluation']['best_answer']['best_confidence_score'],
-                    save_to_path_file=results_file
-                )
-            
-                logger.success(f"Cascade level {current_cascade_level} completed.")
-                # break
+                    logger.success(f"Cascade level {current_cascade_level} completed.")
+                    # break
+        except Exception as e:  # ADD EXCEPTION HANDLER
+            logger.error(f"Question {question_id} failed with error: {e}")
+            logger.exception("Full traceback:")
+            continue  # Move to next question
 
 
 if __name__ == "__main__":
