@@ -236,7 +236,7 @@ MAX_CASCADE_LEVEL: int = 5  # ! CONFIGURABLE (1 <= value <= 5)
 
 # MLFLOW
 MLFLOW_TRACKING_URI: str = os.getenv(key="MLFLOW_TRACKING_URI", default="http://127.0.0.1:5000")
-EXPERIMENT_NAME: str = f"complex_workflow_run_max_{NUM_MAX_QUESTIONS}"  # ! CONFIGURABLE
+EXPERIMENT_NAME: str = f"complex_workflow_5th_only_{NUM_MAX_QUESTIONS}"  # ! CONFIGURABLE
 
 # EXPERIMENT DATASET # ! CONFIGURABLE
 # * Arena Hard Auto v1.0
