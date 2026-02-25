@@ -20,7 +20,7 @@ from typing import Any, Dict, Optional
 # Environment Setup (must happen before other imports)
 from dotenv import load_dotenv
 
-env_path = Path(__file__).parent.parent.parent / ".envfile"
+env_path = Path(__file__).parent.parent.parent / ".env"
 load_dotenv(dotenv_path=env_path)
 
 # Add src to path for direct script execution
