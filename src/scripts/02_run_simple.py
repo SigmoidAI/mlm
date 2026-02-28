@@ -701,6 +701,7 @@ def run_evaluation() -> None:
             except Exception as e:
                 print(f"   Error: {e}\n")
                 mlflow.log_metrics({"success": 0})
+                continue
     
     # Print results summary
     avg_iter = total_iterations / num_questions if num_questions > 0 else 0
