@@ -136,9 +136,15 @@ class WorkingAgent(PydanticAIAgent):
             nest_asyncio.apply()
             return loop.run_until_complete(self.generate(user_input))
 
-    async def generate_critique(self, peer_responses: List[AgentResponse]) -> AgentResponse:
-        """Generate critique of peer responses."""
-        critique_prompt = f"Please critique the following {len(peer_responses)} responses:\n\n"
+    async def generate_critique(self, question: str, peer_responses: list[Prompt], own_previous_answer: str):
+        critique_prompt = f'''
+    Original question: {question}
+
+    Your previous answer: {own_previous_answer}
+
+    Please critique the following {len(peer_responses)} responses:
+    '''
+
         for i, resp in enumerate(peer_responses, 1):
             critique_prompt += f"Response {i}:\n{resp.content}\n\n"
         
