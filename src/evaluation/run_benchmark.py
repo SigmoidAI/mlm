@@ -348,12 +348,10 @@ async def run_benchmark(exp_1_name: str, exp_2_name: str):
                 traces_a = extract_traces(client, run_id_a, exp_1_id)
                 traces_b = extract_traces(client, run_id_b, exp_2_id)
 
-                question_a = traces_a.iloc[0]["request"]["q"]
-                answer_a   = traces_a.iloc[0]["response"]["output"]
-                trace_id_a = traces_a.iloc[0]["trace_id"]
-                gpt_cost_info = estimate_gpt_cost(question_a, answer_a)
-
+                answer_a, trace_id_a, matched_key = extract_answer_b(traces_a)
                 answer_b, trace_id_b, matched_key = extract_answer_b(traces_b)
+                question_b = traces_b.iloc[0]["request"]["q"]
+                gpt_cost_info = estimate_gpt_cost(question_b, answer_b)
 
                 if answer_b is None:
                     print(f"   ⚠️  Skipping: None of {ANSWER_B_KEY_PRIORITY} found in exp B traces.")
@@ -367,7 +365,7 @@ async def run_benchmark(exp_1_name: str, exp_2_name: str):
                 skipped.append(run_name)
                 continue
 
-            question = question_a
+            question = question_b
             if not question:
                 print(f"   ⚠️  Skipping: Could not extract question.")
                 skipped.append(run_name)
