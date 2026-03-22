@@ -513,12 +513,7 @@ python-multipart==0.0.22
     # via mcp
 pytz==2025.2
     # via pandas
-pywin32==311
-    # via
-    #   docker
-    #   mcp
-pywin32-ctypes==0.2.3
-    # via keyring
+
 pyyaml==6.0.3
     # via
     #   sigmoid-mlm-project (pyproject.toml)
@@ -700,8 +695,7 @@ werkzeug==3.1.5
     # via
     #   flask
     #   flask-cors
-win32-setctime==1.2.0
-    # via loguru
+
 wrapt==1.17.3
     # via
     #   opentelemetry-instrumentation
