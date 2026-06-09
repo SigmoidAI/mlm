@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mlm-lib"
+version = "0.1.0"
+description = "Cascade-of-Models library — simple and complex LLM evaluation runs"
+requires-python = ">=3.13"
+dependencies = [
+    "json-repair>=0.57.1",
+    "mlflow>=3.9.0",
+    "nest-asyncio>=1.6.0",
+    "pydantic>=2.12.5",
+    "pydantic-ai>=1.51.0",
+    "python-dotenv>=1.2.1",
+    "pyyaml>=6.0.3",
+]
+
+[tool.hatch.build.targets.wheel]
+# pyproject.toml lives inside the mlm_lib/ directory, so "." is the package root.
+# Hatchling picks up __init__.py here and installs as the "mlm_lib" package.
+packages = ["."]
