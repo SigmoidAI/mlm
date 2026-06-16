@@ -4,13 +4,13 @@ services:
     container_name: mlflow_db
     restart: always
     environment:
-      - POSTGRES_USER=admin
-      - POSTGRES_PASSWORD=secret_password
-      - POSTGRES_DB=mlflow_tracking
+      - POSTGRES_USER=${POSTGRESQL_MLFLOW_USERNAME}
+      - POSTGRES_PASSWORD=${POSTGRESQL_MLFLOW_PASSWORD}
+      - POSTGRES_DB=${POSTGRESQL_MLFLOW_DB_NAME}
     volumes:
       - ./mlflow_postgres_volume:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U admin -d mlflow_tracking"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRESQL_MLFLOW_USERNAME} -d ${POSTGRESQL_MLFLOW_DB_NAME}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -25,14 +25,14 @@ services:
       db:
         condition: service_healthy
     environment:
-      - BACKEND_URI=postgresql://admin:secret_password@db:5432/mlflow_tracking
+      - BACKEND_URI=postgresql://${POSTGRESQL_MLFLOW_USERNAME}:${POSTGRESQL_MLFLOW_PASSWORD}@db:5432/${POSTGRESQL_MLFLOW_DB_NAME}
+      - MLFLOW_FLASK_SERVER_SECRET_KEY=${MLFLOW_FLASK_SERVER_SECRET_KEY}
     volumes:
       - ./mlflow_artifact_volume:/opt/mlflow/artifacts
     command: >
       mlflow server 
-      --backend-store-uri postgresql://admin:secret_password@db:5432/mlflow_tracking
+      --backend-store-uri postgresql://${POSTGRESQL_MLFLOW_USERNAME}:${POSTGRESQL_MLFLOW_PASSWORD}@db:5432/${POSTGRESQL_MLFLOW_DB_NAME}
       --default-artifact-root /opt/mlflow/artifacts
       --host 0.0.0.0
       --port 5000
       --allowed-hosts "*"
-      --app-name basic-auth
